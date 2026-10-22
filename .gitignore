@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+.archify/
+.kilo
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+prisma/dev.db*
+src/generated/
+.DS_Store
+*.log
+*.tsbuildinfo
+CAPABILITY_MATRIX.csv
+LITELLM_GAP_INVESTIGATION_REPORT.md

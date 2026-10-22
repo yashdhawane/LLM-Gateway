@@ -1,0 +1,100 @@
+// Prisma schema for LLM Gateway
+// Based on LiteLLM gap investigation - explicit ownership model
+// No implicit team resolution; every resource has explicit owner
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Core user / developer account
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      Role     @default(DEVELOPER)
+  apiKeys   ApiKey[]
+  requestLogs RequestLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  DEVELOPER
+  OPERATOR
+  ADMIN
+}
+
+// API Key with explicit ownership
+model ApiKey {
+  id        String   @id @default(cuid())
+  key       String   @unique // hashed key stored here
+  prefix    String   @default("lg_") // key prefix for lookup
+  name      String   @default("default")
+  ownerId   String   // explicit owner - user id
+  ownerType OwnerType @default(USER)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  isActive  Boolean  @default(true)
+  lastUsedAt DateTime?
+  requestLogs RequestLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId, ownerType])
+  @@index([prefix])
+  @@index([userId])
+}
+
+enum OwnerType {
+  USER
+  TEAM
+  ORG
+}
+
+// Configured upstream models (single provider for MVP)
+model Model {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  provider    String   // e.g. "openai", "mock"
+  baseUrl     String?
+  apiKeyId    String? // optional provider-specific API key
+  isActive    Boolean  @default(true)
+  timeoutMs   Int      @default(30000)
+  requestLogs RequestLog[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Request history and usage metadata
+model RequestLog {
+  id          String   @id @default(cuid())
+  traceId     String   @unique // correlation ID across response and logs
+  requestId   String   // external request ID from client
+  userId      String
+  apiKeyId    String?
+  modelId     String?
+  provider    String?
+  statusCode  Int      @default(0)
+  latencyMs   Int      @default(0)
+  promptTokens Int?     // only if provider supplies
+  completionTokens Int? // only if provider supplies
+  totalTokens Int?     // only if provider supplies
+  cost        Float?   // only if provider supplies
+  errorCode   String?  // machine-readable error code
+  errorMessage String?
+  createdAt   DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id])
+  apiKey   ApiKey?  @relation(fields: [apiKeyId], references: [id])
+  model    Model?   @relation(fields: [modelId], references: [id])
+
+  @@index([traceId])
+  @@index([userId])
+  @@index([apiKeyId])
+  @@index([createdAt])
+}
