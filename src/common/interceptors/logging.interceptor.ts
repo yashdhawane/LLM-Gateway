@@ -37,7 +37,7 @@ export class LoggingInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest();
     const start = Date.now();
 
-    const traceId = request.traceId;
+    const traceId = request.traceId ?? request.id;
     const method = request.method;
     const url = request.url;
     const userId = request.user?.id;

@@ -12,8 +12,28 @@ export interface ProviderResponse {
   traceId: string;
 }
 
+export type ProviderErrorCode =
+  | 'PROVIDER_TIMEOUT'
+  | 'PROVIDER_RATE_LIMIT'
+  | 'PROVIDER_BAD_REQUEST'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'PROVIDER_ERROR';
+
+export class ProviderError extends Error {
+  readonly name = 'ProviderError';
+
+  constructor(
+    public readonly code: ProviderErrorCode,
+    message: string,
+    public readonly providerStatus?: number,
+  ) {
+    super(message);
+  }
+}
+
 export abstract class LLMProvider {
   abstract readonly name: string;
+  abstract readonly requiresApiKey: boolean;
 
   abstract chatCompletion(
     request: ChatCompletionRequest,

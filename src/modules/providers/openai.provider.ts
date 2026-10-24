@@ -1,12 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../router/schemas/chat-completion.schema';
-import { LLMProvider, ProviderOptions, ProviderResponse } from './base.provider';
+import {
+  LLMProvider,
+  ProviderError,
+  ProviderOptions,
+  ProviderResponse,
+} from './base.provider';
 import { firstValueFrom, timeout } from 'rxjs';
 
 @Injectable()
 export class OpenAIProvider extends LLMProvider {
   readonly name = 'openai';
+  readonly requiresApiKey = true;
   private readonly logger = new Logger(OpenAIProvider.name);
 
   constructor(private readonly httpService: HttpService) {
@@ -45,16 +51,53 @@ export class OpenAIProvider extends LLMProvider {
       };
     } catch (error: any) {
       const latencyMs = Date.now() - start;
+      const providerStatus = error.response?.status;
       this.logger.error(
         `[${traceId}] OpenAI provider error after ${latencyMs}ms: ${error.message}`,
         error.stack,
       );
 
-      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-        throw new Error('PROVIDER_TIMEOUT');
+      if (
+        error.name === 'TimeoutError' ||
+        error.code === 'ECONNABORTED' ||
+        /timeout/i.test(error.message ?? '')
+      ) {
+        throw new ProviderError(
+          'PROVIDER_TIMEOUT',
+          'Provider request timed out',
+          providerStatus,
+        );
       }
 
-      throw new Error(`PROVIDER_ERROR: ${error.message}`);
+      if (providerStatus === 429) {
+        throw new ProviderError(
+          'PROVIDER_RATE_LIMIT',
+          'Provider rate limit exceeded',
+          providerStatus,
+        );
+      }
+
+      if (providerStatus === 400 || providerStatus === 422) {
+        throw new ProviderError(
+          'PROVIDER_BAD_REQUEST',
+          'Provider rejected the request',
+          providerStatus,
+        );
+      }
+
+      if (typeof providerStatus === 'number' && providerStatus >= 500) {
+        throw new ProviderError(
+          'PROVIDER_UNAVAILABLE',
+          'Provider is unavailable',
+          providerStatus,
+        );
+      }
+
+      throw new ProviderError(
+        'PROVIDER_ERROR',
+        'Provider request failed',
+        providerStatus,
+      );
     }
   }
 

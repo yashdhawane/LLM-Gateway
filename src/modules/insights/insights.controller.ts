@@ -1,5 +1,11 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ApiErrorResponseDto } from '../../common/dto/api-error.dto';
 import { CurrentUser } from '../../common/decorators';
 import { JwtUser } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -14,6 +20,11 @@ export class InsightsController {
 
   @Get('me')
   @ApiOperation({ summary: 'Get usage insights for the current user' })
+  @ApiResponse({
+    status: 401,
+    type: ApiErrorResponseDto,
+    description: 'Unauthorized',
+  })
   getMyInsights(@CurrentUser() user: JwtUser) {
     return this.insightsService.getUserInsights(user.id);
   }

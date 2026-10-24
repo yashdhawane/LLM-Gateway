@@ -5,6 +5,7 @@ import { LLMProvider, ProviderOptions, ProviderResponse } from './base.provider'
 @Injectable()
 export class MockProvider extends LLMProvider {
   readonly name = 'mock';
+  readonly requiresApiKey = false;
   private readonly logger = new Logger(MockProvider.name);
 
   async chatCompletion(
