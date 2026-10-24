@@ -16,6 +16,8 @@ const envSchema = z.object({
       (value) => value.startsWith('postgresql://') || value.startsWith('postgres://'),
       'must be a PostgreSQL connection string',
     ),
+  JWT_SECRET: z.string().min(32, 'must be at least 32 characters'),
+  JWT_EXPIRES_IN: z.string().min(1).default('7d'),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),

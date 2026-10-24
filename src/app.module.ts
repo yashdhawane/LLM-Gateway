@@ -8,6 +8,8 @@ import { ProvidersModule } from './modules/providers/providers.module';
 import { TelemetryModule } from './modules/telemetry/telemetry.module';
 import { SpendModule } from './modules/spend/spend.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
+import { InsightsModule } from './modules/insights/insights.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -17,7 +19,7 @@ import { PrismaModule } from './prisma/prisma.module';
       cache: true,
       envFilePath: '.env',
       validate: validateEnv,
-      skipProcessEnv: true
+      skipProcessEnv: true,
     }),
     EventEmitterModule.forRoot(),
     PrismaModule,
@@ -27,6 +29,8 @@ import { PrismaModule } from './prisma/prisma.module';
     GatewayModule,
     TelemetryModule,
     SpendModule,
+    InsightsModule,
+    AdminModule,
   ],
   controllers: [],
   providers: [],

@@ -3,10 +3,13 @@ import {
   UnauthorizedException,
   Logger,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { OwnerType } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
+import { OwnerType, Prisma, Role } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { PrismaService } from '../../prisma/prisma.service';
+import { LoginDto, SignupDto } from './dto/auth.dto';
 
 export interface AuthenticatedUser {
   id: string;
@@ -16,11 +19,128 @@ export interface AuthenticatedUser {
   ownerId: string;
   ownerType: OwnerType;
 }
+
+export interface JwtUser {
+  id: string;
+  email: string;
+  name: string | null;
+  role: Role;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  async signup(dto: SignupDto) {
+    const email = dto.email.trim().toLowerCase();
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      throw this.emailAlreadyExists();
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 10);
+
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          email,
+          name: dto.name?.trim() || null,
+          passwordHash,
+          role: Role.DEVELOPER,
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+        },
+      });
+
+      return this.createSession(user);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw this.emailAlreadyExists();
+      }
+
+      throw error;
+    }
+  }
+
+  async login(dto: LoginDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        passwordHash: true,
+      },
+    });
+
+    const validPassword =
+      user?.passwordHash &&
+      (await bcrypt.compare(dto.password, user.passwordHash));
+
+    if (!user || !validPassword) {
+      this.logger.warn(`Invalid login attempt for ${email}`);
+      throw new UnauthorizedException({
+        code: 'AUTHENTICATION_ERROR',
+        message: 'Invalid email or password',
+        statusCode: 401,
+      });
+    }
+
+    return this.createSession({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    });
+  }
+
+  async getJwtUser(userId: string): Promise<JwtUser | null> {
+    return this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+      },
+    });
+  }
+
+  private async createSession(user: JwtUser) {
+    const accessToken = await this.jwtService.signAsync({
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+    });
+
+    return { accessToken, user };
+  }
+
+  private emailAlreadyExists() {
+    return new ConflictException({
+      code: 'EMAIL_ALREADY_EXISTS',
+      message: 'An account with this email already exists',
+      statusCode: 409,
+    });
+  }
 
   async validateApiKey(apiKey: string): Promise<AuthenticatedUser> {
     // Look up by a short key prefix, then verify the hash. The prefix is
@@ -64,12 +184,7 @@ export class AuthService {
     };
   }
 
-  async createApiKey(
-    userId: string,
-    name: string,
-    ownerId: string,
-    ownerType: OwnerType,
-  ) {
+  async createApiKey(userId: string, name: string) {
     const rawKey = `lg_${require('crypto').randomBytes(24).toString('hex')}`;
     const hashedKey = await bcrypt.hash(rawKey, 10);
 
@@ -78,8 +193,8 @@ export class AuthService {
         key: hashedKey,
         prefix: rawKey.substring(0, 11),
         name,
-        ownerId,
-        ownerType,
+        ownerId: userId,
+        ownerType: OwnerType.USER,
         userId,
       },
       select: {
@@ -130,6 +245,15 @@ export class AuthService {
     return this.prisma.apiKey.update({
       where: { id: apiKeyId },
       data: { isActive: false },
+      select: {
+        id: true,
+        prefix: true,
+        name: true,
+        isActive: true,
+        lastUsedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
   }
 

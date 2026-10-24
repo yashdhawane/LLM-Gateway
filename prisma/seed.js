@@ -5,12 +5,20 @@ const { randomBytes } = require('node:crypto');
 const prisma = new PrismaClient();
 
 async function main() {
+  // MVP: one hardcoded admin account. Change this password before any real deployment.
+  const adminPassword = 'admin123';
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
+
   const user = await prisma.user.upsert({
     where: { email: 'dev@local.test' },
-    update: {},
+    update: {
+      role: 'ADMIN',
+      passwordHash,
+    },
     create: {
       email: 'dev@local.test',
-      name: 'Dev User',
+      name: 'Dev Admin',
+      passwordHash,
       role: 'ADMIN',
     },
   });

@@ -40,6 +40,15 @@ export function setupSwagger(app: INestApplication): void {
       },
       'api-key',
     )
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description: 'Enter the JWT returned by /auth/login or /auth/signup',
+      },
+      'jwt',
+    )
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
