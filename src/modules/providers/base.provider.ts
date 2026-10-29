@@ -17,6 +17,7 @@ export type ProviderErrorCode =
   | 'PROVIDER_RATE_LIMIT'
   | 'PROVIDER_BAD_REQUEST'
   | 'PROVIDER_UNAVAILABLE'
+  | 'PROVIDER_NOT_CONFIGURED'
   | 'PROVIDER_ERROR';
 
 export class ProviderError extends Error {

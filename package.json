@@ -10,7 +10,7 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/config.test.js test/chat-contract.test.js test/error-contract.test.js",
+    "test": "npm run build && node --test test/config.test.js test/chat-contract.test.js test/error-contract.test.js test/gateway-service.test.js test/resilience.test.js test/credential-manager.test.js test/provider-normalization.test.js test/provider-http.test.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"

@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
-import { ChatCompletionRequest, ChatCompletionResponse } from '../router/schemas/chat-completion.schema';
+import {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+} from '../router/schemas/chat-completion.schema';
 import {
   LLMProvider,
-  ProviderError,
   ProviderOptions,
   ProviderResponse,
 } from './base.provider';
-import { firstValueFrom, timeout } from 'rxjs';
+import { mapHttpProviderError, requestWithTimeout } from './provider-http';
 
 @Injectable()
 export class OpenAIProvider extends LLMProvider {
@@ -25,95 +27,66 @@ export class OpenAIProvider extends LLMProvider {
     traceId: string,
   ): Promise<ProviderResponse> {
     const start = Date.now();
-    const url = `${options.baseUrl ?? 'https://api.openai.com'}/v1/chat/completions`;
 
     try {
-      const response = await firstValueFrom(
-        this.httpService.post(url, request, {
+      const response = await requestWithTimeout<ChatCompletionResponse>(
+        this.httpService,
+        {
+          method: 'POST',
+          url: `${this.apiRoot(options)}/chat/completions`,
+          data: request,
           headers: {
-            'Authorization': `Bearer ${options.apiKey}`,
+            Authorization: `Bearer ${options.apiKey ?? ''}`,
             'Content-Type': 'application/json',
             'X-Trace-Id': traceId,
           },
-        }).pipe(timeout(options.timeoutMs)),
+        },
+        options.timeoutMs,
       );
-
-      const latencyMs = Date.now() - start;
-      const providerResponse: ChatCompletionResponse = {
-        ...response.data,
-        trace_id: traceId,
-      };
 
       return {
-        response: providerResponse,
-        latencyMs,
+        response: {
+          ...response.data,
+          trace_id: traceId,
+        },
+        latencyMs: Date.now() - start,
         traceId,
       };
-    } catch (error: any) {
+    } catch (error) {
       const latencyMs = Date.now() - start;
-      const providerStatus = error.response?.status;
+      const err = error as Error;
       this.logger.error(
-        `[${traceId}] OpenAI provider error after ${latencyMs}ms: ${error.message}`,
-        error.stack,
+        `[${traceId}] OpenAI provider error after ${latencyMs}ms: ${err.message}`,
+        err.stack,
       );
-
-      if (
-        error.name === 'TimeoutError' ||
-        error.code === 'ECONNABORTED' ||
-        /timeout/i.test(error.message ?? '')
-      ) {
-        throw new ProviderError(
-          'PROVIDER_TIMEOUT',
-          'Provider request timed out',
-          providerStatus,
-        );
-      }
-
-      if (providerStatus === 429) {
-        throw new ProviderError(
-          'PROVIDER_RATE_LIMIT',
-          'Provider rate limit exceeded',
-          providerStatus,
-        );
-      }
-
-      if (providerStatus === 400 || providerStatus === 422) {
-        throw new ProviderError(
-          'PROVIDER_BAD_REQUEST',
-          'Provider rejected the request',
-          providerStatus,
-        );
-      }
-
-      if (typeof providerStatus === 'number' && providerStatus >= 500) {
-        throw new ProviderError(
-          'PROVIDER_UNAVAILABLE',
-          'Provider is unavailable',
-          providerStatus,
-        );
-      }
-
-      throw new ProviderError(
-        'PROVIDER_ERROR',
-        'Provider request failed',
-        providerStatus,
-      );
+      throw mapHttpProviderError(error, 'openai');
     }
   }
 
   async healthCheck(options: ProviderOptions): Promise<boolean> {
     try {
-      const url = `${options.baseUrl ?? 'https://api.openai.com'}/v1/models`;
-      await firstValueFrom(
-        this.httpService.get(url, {
+      await requestWithTimeout(
+        this.httpService,
+        {
+          method: 'GET',
+          url: `${this.apiRoot(options)}/models`,
           headers: {
-            'Authorization': `Bearer ${options.apiKey}`,
+            Authorization: `Bearer ${options.apiKey ?? ''}`,
           },
-        }).pipe(timeout(5000)),
+        },
+        5000,
       );
       return true;
     } catch {
       return false;
     }
+  }
+
+  private apiRoot(options: ProviderOptions): string {
+    const base = (options.baseUrl ?? 'https://api.openai.com').replace(
+      /\/+$/,
+      '',
+    );
+    return base.endsWith('/v1') ? base : `${base}/v1`;
   }
 }

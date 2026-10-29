@@ -45,11 +45,38 @@ async function main() {
   }
 
   const models = [
-    { name: 'mock', provider: 'mock', baseUrl: null },
-    { name: 'gpt-4o-mini', provider: 'openai', baseUrl: null },
+    {
+      name: 'mock',
+      provider: 'mock',
+      upstreamName: 'mock',
+      baseUrl: null,
+      fallbackModels: [],
+      maxRetries: 0,
+      cooldownMs: 30000,
+    },
+    {
+      name: 'gpt-4o-mini',
+      provider: 'openai',
+      upstreamName: 'gpt-4o-mini',
+      baseUrl: null,
+      fallbackModels: [],
+      maxRetries: 0,
+      cooldownMs: 30000,
+    },
+    {
+      name: 'claude-3-5-haiku-latest',
+      provider: 'anthropic',
+      upstreamName: 'claude-3-5-haiku-latest',
+      baseUrl: null,
+      fallbackModels: [],
+      maxRetries: 0,
+      cooldownMs: 30000,
+    },
   ];
 
   for (const model of models) {
+    // Insert-only: re-seeding creates missing models but never mutates
+    // existing rows (customize upstreamName via migration or manual edit).
     await prisma.model.upsert({
       where: { name: model.name },
       update: {},

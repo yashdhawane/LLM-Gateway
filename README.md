@@ -17,7 +17,7 @@ npm run prisma:migrate
 npm run db:seed
 ```
 
-`db:seed` creates the MVP admin account, seeds the mock/OpenAI models, and prints a raw API key once if one does not already exist.
+`db:seed` creates the MVP admin account, seeds the mock/OpenAI/Anthropic models, and prints a raw API key once if one does not already exist.
 
 Seeded admin credentials (MVP only; change before deploying):
 
@@ -38,6 +38,50 @@ npm run build && npm run start:prod
 - Swagger UI: `http://localhost:3000/docs`
 
 For the OpenAI SDK, use `http://localhost:3000/api/v1` as the base URL. The SDK appends `/chat/completions` and `/models` to it.
+
+## Providers and credentials
+
+All providers are normalized behind the same OpenAI-style chat contract. The current registry contains:
+
+| Provider | Credential variable | Default base URL | Protocol |
+| --- | --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | `https://api.openai.com` | OpenAI chat completions |
+| `anthropic` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com` | Anthropic Messages API |
+| `mock` | none | local | deterministic echo response |
+
+Credentials are resolved by `CredentialManager` from validated environment configuration. They are never stored in the database or written to request logs. A model row may override the provider's base URL, which is useful for OpenAI-compatible proxies or local endpoints.
+
+The seed creates:
+
+- `mock` (no key required)
+- `gpt-4o-mini` (`openai`)
+- `claude-3-5-haiku-latest` (`anthropic`)
+
+Set the corresponding key in `.env` to enable a provider. Requests to unconfigured providers fail with HTTP `503` and `PROVIDER_NOT_CONFIGURED`; they do not fall back unless the model has an explicit fallback chain.
+
+### Model routing and resilience
+
+A model `name` is the public gateway alias. Routing and resilience settings live on each `Model` row:
+
+| Field | Purpose |
+| --- | --- |
+| `upstreamName` | Provider's actual model identifier, when it differs from the alias |
+| `fallbackModels` | Ordered model aliases to try after a retryable or provider-configuration failure |
+| `timeoutMs` | Per-attempt upstream timeout |
+| `maxRetries` | Opt-in retries per route; defaults to `0` |
+| `cooldownMs` | Process-local cooldown after a retryable failure |
+
+The router resolves an alias to an ordered target list and caches it for 30 seconds. A request then runs through the resilience layer:
+
+- Upstream requests are aborted on timeout, not just abandoned.
+- Retries use bounded exponential backoff and are disabled by default because chat completions are not idempotent.
+- Timeouts, rate limits, upstream `5xx` responses, provider errors, and missing provider configuration can fall back to the next configured model.
+- Provider-side `400` validation failures do not retry or fall back.
+- Failed routes enter a process-local cooldown; cooldown state is intentionally not shared across instances in this foundation.
+
+Fallbacks are explicit and one level deep. The seed does not configure cross-provider fallbacks by default; add them deliberately after checking model capabilities and cost.
+
+The Anthropic adapter rejects parameters it cannot honor, such as `presence_penalty`, `frequency_penalty`, a non-empty `logit_bias`, and `seed`, with `PROVIDER_BAD_REQUEST` instead of silently dropping them.
 
 ## Authentication
 
@@ -122,7 +166,7 @@ Common status codes:
 | `409` | Account already exists |
 | `429` | Provider rate limit exceeded |
 | `502` | Provider request failed |
-| `503` | Provider credentials are not configured |
+| `503` | Provider credentials are not configured or the provider is unsupported |
 | `504` | Provider request timed out |
 
 ### Request correlation
@@ -130,6 +174,7 @@ Common status codes:
 - Every response includes an `x-trace-id` header.
 - Clients may send `x-trace-id` to propagate their own trace.
 - Clients may send `x-request-id`; it is stored with the request log. It falls back to the trace ID when omitted.
+- If a provider succeeds but request-log persistence fails, the gateway still returns the provider response to avoid prompting a potentially billable duplicate retry. The failure is logged with the trace ID; usage insights may not include that request.
 
 ### Models
 
@@ -182,7 +227,7 @@ curl http://localhost:3000/api/v1/admin/insights \
   -H "Authorization: Bearer <admin-jwt>"
 ```
 
-Set `OPENAI_API_KEY` in `.env` to use the seeded `gpt-4o-mini` route.
+Set `OPENAI_API_KEY` in `.env` to use the seeded `gpt-4o-mini` route, or `ANTHROPIC_API_KEY` to use `claude-3-5-haiku-latest`.
 
 ## Scripts
 
@@ -197,6 +242,6 @@ Set `OPENAI_API_KEY` in `.env` to use the seeded `gpt-4o-mini` route.
 
 ## Current status
 
-Working: validated startup config, JWT signup/login, per-user API keys, API-key guard, OpenAI-compatible non-streaming chat contract, structured error envelope, trace/request correlation, model listing, routing, mock provider, OpenAI provider, request logging, user insights, admin user insights, Swagger.
+Working: validated startup config, JWT signup/login, per-user API keys, API-key guard, OpenAI-compatible non-streaming chat contract, structured error envelope, trace/request correlation, model listing, provider registry with centralized environment credentials, OpenAI and Anthropic normalization, alias/fallback routing, per-request timeout cancellation, opt-in retries, in-memory cooldowns, mock provider, request logging, user insights, admin user insights, Swagger.
 
-MVP limitations: one seeded admin account, no refresh tokens/password reset, no role-management UI, no streaming, provider timeout cancellation is not implemented, no retries/fallbacks/cooldowns, and cost tracking is not implemented.
+MVP limitations: one seeded admin account, no refresh tokens/password reset, no role-management UI, no streaming, no shared cooldown/health state across instances, no database-backed credential store or key rotation, no rate limits/quotas, and cost tracking is not implemented. Retries are disabled by default because chat completions are not idempotent.

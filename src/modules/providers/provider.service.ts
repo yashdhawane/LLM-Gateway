@@ -1,8 +1,14 @@
-import { Injectable, Logger, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, Logger, Inject } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { OpenAIProvider } from './openai.provider';
+import { AnthropicProvider } from './anthropic.provider';
 import { MockProvider } from './mock.provider';
-import { LLMProvider, ProviderOptions, ProviderResponse } from './base.provider';
+import {
+  LLMProvider,
+  ProviderError,
+  ProviderOptions,
+  ProviderResponse,
+} from './base.provider';
 import { ChatCompletionRequest } from '../router/schemas/chat-completion.schema';
 
 @Injectable()
@@ -15,6 +21,7 @@ export class ProviderService {
   ) {
     this.registerProvider(new MockProvider());
     this.registerProvider(new OpenAIProvider(this.httpService));
+    this.registerProvider(new AnthropicProvider(this.httpService));
   }
 
   registerProvider(provider: LLMProvider) {
@@ -25,11 +32,10 @@ export class ProviderService {
   getProvider(name: string): LLMProvider {
     const provider = this.providers.get(name);
     if (!provider) {
-      throw new NotFoundException({
-        code: 'PROVIDER_ERROR',
-        message: `Provider '${name}' not found`,
-        statusCode: 404,
-      });
+      throw new ProviderError(
+        'PROVIDER_NOT_CONFIGURED',
+        `Provider '${name}' is not registered.`,
+      );
     }
     return provider;
   }
@@ -44,7 +50,10 @@ export class ProviderService {
     return provider.chatCompletion(request, options, traceId);
   }
 
-  async healthCheck(providerName: string, options: ProviderOptions): Promise<boolean> {
+  async healthCheck(
+    providerName: string,
+    options: ProviderOptions,
+  ): Promise<boolean> {
     const provider = this.getProvider(providerName);
     return provider.healthCheck(options);
   }

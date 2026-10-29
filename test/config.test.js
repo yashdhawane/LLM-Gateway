@@ -13,6 +13,7 @@ test('validateEnv applies defaults for optional server settings', () => {
   assert.equal(env.JWT_EXPIRES_IN, '7d');
   assert.equal(env.LOG_LEVEL, 'info');
   assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
 });
 
 test('validateEnv coerces PORT and keeps provided auth/provider settings', () => {
@@ -24,6 +25,7 @@ test('validateEnv coerces PORT and keeps provided auth/provider settings', () =>
     PORT: '4100',
     LOG_LEVEL: 'debug',
     OPENAI_API_KEY: 'sk-test',
+    ANTHROPIC_API_KEY: 'sk-ant-test',
   });
 
   assert.equal(env.PORT, 4100);
@@ -31,6 +33,7 @@ test('validateEnv coerces PORT and keeps provided auth/provider settings', () =>
   assert.equal(env.JWT_EXPIRES_IN, '1h');
   assert.equal(env.LOG_LEVEL, 'debug');
   assert.equal(env.OPENAI_API_KEY, 'sk-test');
+  assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-test');
 });
 
 test('validateEnv treats an empty OpenAI key as missing', () => {
@@ -41,6 +44,16 @@ test('validateEnv treats an empty OpenAI key as missing', () => {
   });
 
   assert.equal(env.OPENAI_API_KEY, undefined);
+});
+
+test('validateEnv treats an empty Anthropic key as missing', () => {
+  const env = validateEnv({
+    DATABASE_URL: databaseUrl,
+    JWT_SECRET: jwtSecret,
+    ANTHROPIC_API_KEY: '   ',
+  });
+
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
 });
 
 test('validateEnv rejects a missing DATABASE_URL', () => {

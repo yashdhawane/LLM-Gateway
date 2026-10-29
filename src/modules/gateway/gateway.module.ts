@@ -6,11 +6,12 @@ import { ProvidersModule } from '../providers/providers.module';
 import { AuthModule } from '../auth/auth.module';
 import { TelemetryModule } from '../telemetry/telemetry.module';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { GatewayService } from './gateway.service';
 
 @Module({
   imports: [RouterModule, ProvidersModule, AuthModule, TelemetryModule, PrismaModule],
   controllers: [GatewayController, ModelsController],
-  providers: [],
+  providers: [GatewayService],
   exports: [],
 })
 export class GatewayModule {}

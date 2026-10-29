@@ -6,9 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   HttpException,
-  Inject,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import {
   ApiTags,
   ApiBearerAuth,
@@ -19,20 +17,15 @@ import {
   ApiOkResponse,
 } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../auth/api-key.guard';
-import { RouterService } from '../router/router.service';
-import { ProviderService } from '../providers/provider.service';
 import { ProviderError } from '../providers/base.provider';
 import {
-  ChatCompletionRequest,
   ChatRequestValidationError,
   validateChatCompletionRequest,
 } from '../router/schemas/chat-completion.schema';
-import { ErrorCode } from '../../common/filters/all-exceptions.filter';
 import { ApiErrorResponseDto } from '../../common/dto/api-error.dto';
-import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser, RequestId, TraceId } from '../../common/decorators';
 import { AuthenticatedUser } from '../auth/auth.service';
-import { TelemetryService } from '../telemetry/telemetry.module';
+import { GatewayService } from './gateway.service';
 import {
   ChatCompletionRequestDto,
   ChatCompletionResponseDto,
@@ -42,13 +35,7 @@ import {
 @ApiBearerAuth('api-key')
 @Controller('chat/completions')
 export class GatewayController {
-  constructor(
-    private readonly routerService: RouterService,
-    private readonly providerService: ProviderService,
-    private readonly prisma: PrismaService,
-    @Inject(TelemetryService) private readonly telemetry: TelemetryService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly gatewayService: GatewayService) {}
 
   @Post()
   @HttpCode(HttpStatus.OK)
@@ -94,7 +81,7 @@ export class GatewayController {
   @ApiResponse({
     status: 503,
     type: ApiErrorResponseDto,
-    description: 'Provider credentials are not configured',
+    description: 'Provider credentials are not configured or the provider is unsupported',
   })
   @ApiResponse({
     status: 504,
@@ -107,183 +94,67 @@ export class GatewayController {
     @TraceId() traceId: string,
     @RequestId() requestId: string,
   ) {
-    let request: ChatCompletionRequest;
+    const request = this.validateRequest(body);
+
     try {
-      request = validateChatCompletionRequest(body);
-    } catch (error) {
-      if (error instanceof ChatRequestValidationError) {
-        throw new HttpException(
-          {
-            code: error.code,
-            message: error.message,
-            param: error.param,
-            statusCode: 400,
-          },
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-
-      throw error;
-    }
-
-    // Resolve route
-    let routingDecision;
-    try {
-      routingDecision = await this.routerService.resolveRoute(request.model);
-    } catch (error) {
-      const status =
-        error instanceof HttpException
-          ? error.getStatus()
-          : HttpStatus.NOT_FOUND;
-      const responseBody =
-        error instanceof HttpException ? (error.getResponse() as any) : {};
-
-      throw new HttpException(
-        {
-          code: responseBody.code || ErrorCode.MODEL_NOT_FOUND,
-          message:
-            responseBody.message ||
-            (error instanceof Error ? error.message : 'Model not found'),
-          statusCode: status,
-        },
-        status,
-      );
-    }
-
-    const { timeout: requestTimeout, ...providerRequest } = request;
-    const providerOptions = {
-      baseUrl: routingDecision.baseUrl,
-      apiKey: this.config.get<string>('OPENAI_API_KEY'),
-      timeoutMs: requestTimeout ?? routingDecision.timeoutMs,
-    };
-
-    const provider = this.providerService.getProvider(routingDecision.provider);
-    if (provider.requiresApiKey && !providerOptions.apiKey) {
-      throw new HttpException(
-        {
-          code: ErrorCode.PROVIDER_NOT_CONFIGURED,
-          message: `Provider '${routingDecision.provider}' is not configured.`,
-          statusCode: HttpStatus.SERVICE_UNAVAILABLE,
-        },
-        HttpStatus.SERVICE_UNAVAILABLE,
-      );
-    }
-
-    // Call provider
-    let providerResponse;
-    try {
-      providerResponse = await this.providerService.chatCompletion(
-        routingDecision.provider,
-        providerRequest,
-        providerOptions,
-        traceId,
-      );
-    } catch (error) {
-      throw this.mapProviderError(error);
-    }
-
-    // Persist request log
-    await this.prisma.requestLog.create({
-      data: {
+      return await this.gatewayService.createCompletion(request, {
+        user,
         traceId,
         requestId,
-        userId: user.id,
-        apiKeyId: user.apiKeyId,
-        modelId: routingDecision.modelId,
-        provider: routingDecision.provider,
-        statusCode: 200,
-        latencyMs: providerResponse.latencyMs,
-        promptTokens: providerResponse.response.usage?.prompt_tokens ?? null,
-        completionTokens:
-          providerResponse.response.usage?.completion_tokens ?? null,
-        totalTokens: providerResponse.response.usage?.total_tokens ?? null,
-        cost: null, // Don't fabricate cost
-        errorCode: null,
-        errorMessage: null,
-      },
-    });
-
-    // Emit telemetry event
-    this.telemetry.logRequest({
-      traceId,
-      userId: user.id,
-      apiKeyId: user.apiKeyId,
-      modelId: routingDecision.modelId,
-      provider: routingDecision.provider,
-      statusCode: 200,
-      latencyMs: providerResponse.latencyMs,
-      promptTokens: providerResponse.response.usage?.prompt_tokens ?? undefined,
-      completionTokens:
-        providerResponse.response.usage?.completion_tokens ?? undefined,
-      totalTokens: providerResponse.response.usage?.total_tokens ?? undefined,
-      cost: undefined,
-    });
-
-    // Return response with trace ID
-    return {
-      ...providerResponse.response,
-      trace_id: traceId,
-    };
+      });
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        throw this.mapProviderError(error);
+      }
+      throw error;
+    }
   }
 
-  private mapProviderError(error: unknown): HttpException {
-    if (error instanceof ProviderError) {
-      switch (error.code) {
-        case 'PROVIDER_TIMEOUT':
-          return new HttpException(
-            {
-              code: ErrorCode.PROVIDER_TIMEOUT,
-              message: 'Provider request timed out.',
-              statusCode: HttpStatus.GATEWAY_TIMEOUT,
-            },
-            HttpStatus.GATEWAY_TIMEOUT,
-          );
-        case 'PROVIDER_RATE_LIMIT':
-          return new HttpException(
-            {
-              code: ErrorCode.PROVIDER_RATE_LIMIT,
-              message: 'Provider rate limit exceeded.',
-              statusCode: HttpStatus.TOO_MANY_REQUESTS,
-            },
-            HttpStatus.TOO_MANY_REQUESTS,
-          );
-        case 'PROVIDER_BAD_REQUEST':
-          return new HttpException(
-            {
-              code: ErrorCode.PROVIDER_BAD_REQUEST,
-              message: 'Provider rejected the request.',
-              statusCode: HttpStatus.BAD_REQUEST,
-            },
-            HttpStatus.BAD_REQUEST,
-          );
-        case 'PROVIDER_UNAVAILABLE':
-          return new HttpException(
-            {
-              code: ErrorCode.PROVIDER_UNAVAILABLE,
-              message: 'Provider is unavailable.',
-              statusCode: HttpStatus.BAD_GATEWAY,
-            },
-            HttpStatus.BAD_GATEWAY,
-          );
-        default:
-          return new HttpException(
-            {
-              code: ErrorCode.PROVIDER_ERROR,
-              message: 'Provider request failed.',
-              statusCode: HttpStatus.BAD_GATEWAY,
-            },
-            HttpStatus.BAD_GATEWAY,
-          );
+  private validateRequest(body: unknown) {
+    try {
+      return validateChatCompletionRequest(body);
+    } catch (error) {
+      if (!(error instanceof ChatRequestValidationError)) {
+        throw error;
       }
+      throw new HttpException(
+        {
+          code: error.code,
+          message: error.message,
+          param: error.param,
+          statusCode: HttpStatus.BAD_REQUEST,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
     }
+  }
 
+  private mapProviderError(error: ProviderError): HttpException {
+    const statusByCode = {
+      PROVIDER_TIMEOUT: HttpStatus.GATEWAY_TIMEOUT,
+      PROVIDER_RATE_LIMIT: HttpStatus.TOO_MANY_REQUESTS,
+      PROVIDER_BAD_REQUEST: HttpStatus.BAD_REQUEST,
+      PROVIDER_UNAVAILABLE: HttpStatus.BAD_GATEWAY,
+      PROVIDER_NOT_CONFIGURED: HttpStatus.SERVICE_UNAVAILABLE,
+      PROVIDER_ERROR: HttpStatus.BAD_GATEWAY,
+    } satisfies Record<ProviderError['code'], number>;
+    const messageByCode = {
+      PROVIDER_TIMEOUT: 'Provider request timed out.',
+      PROVIDER_RATE_LIMIT: 'Provider rate limit exceeded.',
+      PROVIDER_BAD_REQUEST: 'Provider rejected the request.',
+      PROVIDER_UNAVAILABLE: 'Provider is unavailable.',
+      PROVIDER_NOT_CONFIGURED: 'Provider is not configured.',
+      PROVIDER_ERROR: 'Provider request failed.',
+    } satisfies Record<ProviderError['code'], string>;
+
+    const status = statusByCode[error.code];
     return new HttpException(
       {
-        code: ErrorCode.PROVIDER_ERROR,
-        message: 'Provider request failed.',
-        statusCode: HttpStatus.BAD_GATEWAY,
+        code: error.code,
+        message: messageByCode[error.code],
+        statusCode: status,
       },
-      HttpStatus.BAD_GATEWAY,
+      status,
     );
   }
 }

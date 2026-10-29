@@ -25,6 +25,10 @@ const envSchema = z.object({
     (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
     z.string().min(1).optional(),
   ),
+  ANTHROPIC_API_KEY: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof envSchema>;

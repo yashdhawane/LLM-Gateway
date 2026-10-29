@@ -57,24 +57,29 @@ enum OwnerType {
   ORG
 }
 
-// Configured upstream models (single provider for MVP)
+// Configured upstream models. A model name is the public gateway alias;
+// upstreamName is the provider's actual model identifier.
 model Model {
-  id          String       @id @default(cuid())
-  name        String       @unique
-  provider    String // e.g. "openai", "mock"
-  baseUrl     String?
-  apiKeyId    String? // optional provider-specific API key
-  isActive    Boolean      @default(true)
-  timeoutMs   Int          @default(30000)
-  requestLogs RequestLog[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id             String       @id @default(cuid())
+  name           String       @unique
+  provider       String // e.g. "openai", "anthropic", "mock"
+  upstreamName   String? // provider's model name, if different from the alias
+  baseUrl        String?
+  apiKeyId       String? // optional provider-specific API key
+  fallbackModels String[]     @default([]) // ordered model aliases to try on failure
+  isActive       Boolean      @default(true)
+  timeoutMs      Int          @default(30000)
+  maxRetries     Int          @default(0) // opt-in; chat calls are not idempotent
+  cooldownMs     Int          @default(30000)
+  requestLogs    RequestLog[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 }
 
 // Request history and usage metadata
 model RequestLog {
   id               String   @id @default(cuid())
-  traceId          String   @unique // correlation ID across response and logs
+  traceId          String   // correlation ID across response and logs
   requestId        String // external request ID from client
   userId           String
   apiKeyId         String?

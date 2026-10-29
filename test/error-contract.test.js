@@ -113,12 +113,13 @@ test('does not expose internal error messages', () => {
 });
 
 test('maps provider failures to stable gateway status codes', () => {
-  const controller = new GatewayController(null, null, null, null, null);
+  const controller = new GatewayController(null);
   const cases = [
     ['PROVIDER_TIMEOUT', 504, 'PROVIDER_TIMEOUT'],
     ['PROVIDER_RATE_LIMIT', 429, 'PROVIDER_RATE_LIMIT'],
     ['PROVIDER_BAD_REQUEST', 400, 'PROVIDER_BAD_REQUEST'],
     ['PROVIDER_UNAVAILABLE', 502, 'PROVIDER_UNAVAILABLE'],
+    ['PROVIDER_NOT_CONFIGURED', 503, 'PROVIDER_NOT_CONFIGURED'],
     ['PROVIDER_ERROR', 502, 'PROVIDER_ERROR'],
   ];
 
@@ -130,4 +131,24 @@ test('maps provider failures to stable gateway status codes', () => {
     assert.equal(exception.getStatus(), expectedStatus);
     assert.equal(exception.getResponse().code, expectedCode);
   }
+});
+
+test('does not translate unexpected routing failures into model-not-found', async () => {
+  const databaseError = new Error('database unavailable');
+  const controller = new GatewayController({
+    createCompletion: async () => {
+      throw databaseError;
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      controller.createCompletion(
+        { model: 'mock', messages: [{ role: 'user', content: 'hello' }] },
+        { id: 'user-1', apiKeyId: 'key-1' },
+        'trace-1',
+        'request-1',
+      ),
+    (error) => error === databaseError,
+  );
 });
