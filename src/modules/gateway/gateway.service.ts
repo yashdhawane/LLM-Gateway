@@ -3,6 +3,7 @@ import type { RequestContext } from '../../common/context/request-context';
 import {
   classifyException,
   sanitizeErrorMessage,
+  type ClassifiedError,
 } from '../../common/errors/failure-classifier';
 import type { AttemptObservation } from '../../common/observability/attempt-observation';
 import {
@@ -85,6 +86,17 @@ export class GatewayService {
     const pendingWrites: Promise<void>[] = [];
     let attemptCount = 0;
     let fallbackUsed = false;
+    // The last observation decides the parent row's provider attribution: a
+    // failed request must still answer "through which provider?" (§1 Q1).
+    // A holder object, not a bare `let`: the write happens inside `onAttempt`
+    // and the read in `catch`, where TypeScript would otherwise narrow a
+    // `let` back to its `null` initializer.
+    const observed = {
+      last: null as AttemptObservation<{
+        target: RouteTarget;
+        response: ProviderResponse;
+      }> | null,
+    };
 
     const onAttempt = (
       observation: AttemptObservation<{
@@ -92,6 +104,9 @@ export class GatewayService {
         response: ProviderResponse;
       }>,
     ) => {
+      // Recorded before the cheap guards below: attribution must survive a
+      // missing parent row or a failed attempt write.
+      observed.last = observation;
       attemptCount += 1;
       fallbackUsed = fallbackUsed || observation.isFallback;
 
@@ -231,7 +246,23 @@ export class GatewayService {
         trace_id: context.traceId,
       };
     } catch (error) {
-      const classified = classifyException(error);
+      // Classifying must never skip the attempt writes below or replace the
+      // original error: a throwing `getResponse()` degrades to the same
+      // INTERNAL default `classifyException` produces for an unknown error.
+      let classification: Pick<
+        ClassifiedError,
+        'httpStatus' | 'failureClass' | 'wireCode'
+      >;
+
+      try {
+        classification = classifyException(error);
+      } catch {
+        classification = {
+          httpStatus: 500,
+          failureClass: 'INTERNAL',
+          wireCode: 'INTERNAL_ERROR',
+        };
+      }
 
       await Promise.allSettled(pendingWrites);
 
@@ -240,10 +271,20 @@ export class GatewayService {
           await this.requestLogs.finalizeFailure({
             requestLogId: logId,
             traceId: context.traceId,
-            statusCode: classified.httpStatus,
-            failureClass: classified.failureClass,
-            errorCode: classified.wireCode,
+            statusCode: classification.httpStatus,
+            failureClass: classification.failureClass,
+            errorCode: classification.wireCode,
             errorMessage: sanitizeErrorMessage(error),
+            // The last attempt decides attribution; a failure still names the
+            // provider and model it went through, but only a SUCCEEDED
+            // observation may claim a served model.
+            modelId: observed.last?.target.modelId ?? null,
+            provider: observed.last?.target.provider ?? null,
+            servedModel:
+              observed.last?.status === 'SUCCEEDED'
+                ? (observed.last.result?.response?.response?.model ??
+                  observed.last.target.upstreamModel)
+                : null,
             attemptCount,
             fallbackUsed,
             latencyMs: this.elapsedMs(context),
@@ -263,9 +304,9 @@ export class GatewayService {
       try {
         this.telemetry.logError({
           traceId: context.traceId,
-          errorCode: classified.wireCode,
+          errorCode: classification.wireCode,
           errorMessage: sanitizeErrorMessage(error) ?? 'unknown',
-          statusCode: classified.httpStatus,
+          statusCode: classification.httpStatus,
         });
       } catch (telemetryError) {
         this.reportTelemetryFailure('telemetry.logError', telemetryError, context.traceId);
@@ -431,7 +472,12 @@ export class GatewayService {
       this.reportTelemetryFailure(scope, telemetryError, traceId);
     }
 
-    this.logger.error(`[${traceId}] ${errorMessage}`);
+    // The logger is the last line: a throwing one must not escape either.
+    try {
+      this.logger.error(`[${traceId}] ${errorMessage}`);
+    } catch {
+      // Nothing left to report to.
+    }
   }
 
   /**
@@ -445,10 +491,14 @@ export class GatewayService {
     error: unknown,
     traceId: string,
   ): void {
-    this.logger.error(
-      `[${traceId}] ${scope}: telemetry sink failed: ${
-        sanitizeErrorMessage(error) ?? 'unknown'
-      }`,
-    );
+    try {
+      this.logger.error(
+        `[${traceId}] ${scope}: telemetry sink failed: ${
+          sanitizeErrorMessage(error) ?? 'unknown'
+        }`,
+      );
+    } catch {
+      // TOTAL: a throwing Logger must not change a response (S1).
+    }
   }
 }

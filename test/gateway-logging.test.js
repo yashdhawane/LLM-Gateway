@@ -63,7 +63,6 @@ function providerResponse(overrides = {}) {
 
 function fakeRequestLogs({
   id = 'log-1',
-  failStart = false,
   failAppend = false,
   failFinalizeSuccess = false,
 } = {}) {
@@ -78,9 +77,6 @@ function fakeRequestLogs({
     successes,
     failures,
     start: async (input) => {
-      if (failStart) {
-        throw new Error('request log start failed');
-      }
       started.push(input);
       return { id };
     },
@@ -420,6 +416,12 @@ test('finalizes FAILED with the last failure when every target fails', async () 
   assert.equal(finalized.errorMessage, 'upstream timed out for [redacted]');
   assert.equal(finalized.attemptCount, 2);
   assert.equal(finalized.fallbackUsed, true);
+
+  // A failed request is still attributable: the last attempt names the
+  // provider and model, but nothing was served.
+  assert.equal(finalized.provider, 'mock');
+  assert.equal(finalized.modelId, 'fallback-id');
+  assert.equal(finalized.servedModel, null);
 
   // The failure is observable through telemetry with the wire code.
   assert.equal(gateway.telemetry.requests.length, 0);

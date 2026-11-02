@@ -263,6 +263,8 @@ test('toAttemptRecord derives the latency split once and overheadMs is never neg
   assert.equal(failedRecord.errorCode, 'PROVIDER_ERROR');
   assert.equal(failedRecord.errorMessage, 'socket hang up');
   assert.equal(failedRecord.providerStatus, 502);
+  // A failed attempt never claims a served model: nothing served it.
+  assert.equal(failedRecord.servedModel, null);
   assert.equal(failedRecord.promptTokens, null);
   assert.equal(failedRecord.completionTokens, null);
   assert.equal(failedRecord.providerRequestId, null);

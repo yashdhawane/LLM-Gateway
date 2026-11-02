@@ -118,8 +118,11 @@ export function toAttemptRecord(
     provider: observation.target.provider,
     // Public alias, never the upstream id.
     model: observation.target.modelName,
-    // Echoed model when there is a response, otherwise the name we sent.
-    servedModel: result?.response?.model ?? observation.target.upstreamModel,
+    // Echoed model only when something actually served: a failed attempt must
+    // never claim a model it never reached.
+    servedModel: succeeded
+      ? (result?.response?.model ?? observation.target.upstreamModel)
+      : null,
     credentialId: null,
     status: observation.status,
     // Caller intent lives on the parent row; Phase 1 never streams.
