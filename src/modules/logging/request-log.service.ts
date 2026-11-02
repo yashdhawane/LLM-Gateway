@@ -49,10 +49,12 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
    * holding the process alive.
    */
   onModuleInit(): void {
-    void this.sweepStaleProcessing();
+    // `catch` is belt and braces on top of the service's own totality: no
+    // fire-and-forget call may ever surface as an unhandled rejection.
+    void this.sweepStaleProcessing().catch(() => {});
 
     this.sweepTimer = setInterval(() => {
-      void this.sweepStaleProcessing();
+      void this.sweepStaleProcessing().catch(() => {});
     }, RequestLogService.SWEEP_INTERVAL_MS);
 
     this.sweepTimer.unref();
@@ -188,7 +190,7 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
       }
 
       // No response status exists at attempt time: 0 is the documented "none".
-      this.reportFailure(input.requestLogId, 0, error);
+      this.reportFailure(input.traceId ?? input.requestLogId, 0, error);
     }
   }
 
@@ -223,7 +225,11 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
 
       return result.count === 1;
     } catch (error) {
-      this.reportFailure(input.requestLogId, input.statusCode, error);
+      this.reportFailure(
+        input.traceId ?? input.requestLogId,
+        input.statusCode,
+        error,
+      );
       return false;
     }
   }
@@ -252,7 +258,11 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
 
       return result.count === 1;
     } catch (error) {
-      this.reportFailure(input.requestLogId, input.statusCode, error);
+      this.reportFailure(
+        input.traceId ?? input.requestLogId,
+        input.statusCode,
+        error,
+      );
       return false;
     }
   }
@@ -260,20 +270,33 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
   /**
    * The single reporting path (§6.8 / S1).
    *
-   * `traceId` is the request-log id here: it is the correlation key these
-   * methods actually hold, and it joins straight to `RequestLog.traceId`.
+   * `traceId` is the caller's request trace when it is known, so a write
+   * failure joins to `RequestLog.traceId`; the request-log id is the fallback
+   * these methods always hold. TOTAL: a telemetry sink that throws is logged
+   * and swallowed, because a sweep (or a response path) must not reject.
    */
   private reportFailure(
     traceId: string,
     statusCode: number,
     error: unknown,
   ): void {
-    this.telemetry.logError({
-      traceId,
-      errorCode: 'REQUEST_LOG_WRITE_FAILED',
-      errorMessage: sanitizeErrorMessage(error) ?? 'unknown',
-      statusCode,
-    });
+    const errorMessage = sanitizeErrorMessage(error) ?? 'unknown';
+
+    try {
+      this.telemetry.logError({
+        traceId,
+        errorCode: 'REQUEST_LOG_WRITE_FAILED',
+        errorMessage,
+        statusCode,
+      });
+    } catch (telemetryError) {
+      // The reporter is the last line: never recurse, only log.
+      this.logger.error(
+        `[${traceId}] telemetry.logError failed: ${
+          sanitizeErrorMessage(telemetryError) ?? 'unknown'
+        } (original: ${errorMessage})`,
+      );
+    }
   }
 }
 

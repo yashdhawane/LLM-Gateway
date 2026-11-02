@@ -78,7 +78,6 @@ export class GatewayService {
       this.reportLoggingFailure('request-log.start', error, context.traceId);
     }
 
-    const routing = await this.router.resolveRoute(request.model);
     const { timeout, ...providerRequest } = request;
 
     // Attempt writes are started, never awaited inline: a hung request must
@@ -128,6 +127,7 @@ export class GatewayService {
               ...draft,
               ...(cost ?? {}),
               requestLogId: parentId,
+              traceId: context.traceId,
             });
           } catch (error) {
             this.reportLoggingFailure(
@@ -141,6 +141,11 @@ export class GatewayService {
     };
 
     try {
+      // Routing is the first query that can fail or hang (§6.1): it belongs
+      // inside the guard so `MODEL_NOT_FOUND` finalizes the PROCESSING row as
+      // a caller fault instead of leaving it for the stale sweep.
+      const routing = await this.router.resolveRoute(request.model);
+
       const result = await this.resilience.execute(
         routing.targets,
         (target, timeoutMs) =>
@@ -175,6 +180,7 @@ export class GatewayService {
         try {
           await this.requestLogs.finalizeSuccess({
             requestLogId: logId,
+            traceId: context.traceId,
             statusCode: 200,
             modelId: result.target.modelId,
             requestedModel: context.requestedModel,
@@ -201,18 +207,24 @@ export class GatewayService {
         }
       }
 
-      this.telemetry.logRequest({
-        traceId: context.traceId,
-        userId: context.userId,
-        apiKeyId: context.apiKeyId ?? undefined,
-        modelId: result.target.modelId,
-        provider: result.target.provider,
-        statusCode: 200,
-        latencyMs: result.response.latencyMs,
-        promptTokens: promptTokens ?? undefined,
-        completionTokens: completionTokens ?? undefined,
-        totalTokens: totalTokens ?? undefined,
-      });
+      // A telemetry listener is outside our control: it must never turn a paid
+      // 200 into a 500 (S1/§6.8), only a log line.
+      try {
+        this.telemetry.logRequest({
+          traceId: context.traceId,
+          userId: context.userId,
+          apiKeyId: context.apiKeyId ?? undefined,
+          modelId: result.target.modelId,
+          provider: result.target.provider,
+          statusCode: 200,
+          latencyMs: result.response.latencyMs,
+          promptTokens: promptTokens ?? undefined,
+          completionTokens: completionTokens ?? undefined,
+          totalTokens: totalTokens ?? undefined,
+        });
+      } catch (telemetryError) {
+        this.reportTelemetryFailure('telemetry.logRequest', telemetryError, context.traceId);
+      }
 
       return {
         ...result.response.response,
@@ -227,6 +239,7 @@ export class GatewayService {
         try {
           await this.requestLogs.finalizeFailure({
             requestLogId: logId,
+            traceId: context.traceId,
             statusCode: classified.httpStatus,
             failureClass: classified.failureClass,
             errorCode: classified.wireCode,
@@ -245,12 +258,18 @@ export class GatewayService {
         }
       }
 
-      this.telemetry.logError({
-        traceId: context.traceId,
-        errorCode: classified.wireCode,
-        errorMessage: sanitizeErrorMessage(error) ?? 'unknown',
-        statusCode: classified.httpStatus,
-      });
+      // Guarded for the same reason as the success path: the original error is
+      // the one the controller must see, telemetry throw or not.
+      try {
+        this.telemetry.logError({
+          traceId: context.traceId,
+          errorCode: classified.wireCode,
+          errorMessage: sanitizeErrorMessage(error) ?? 'unknown',
+          statusCode: classified.httpStatus,
+        });
+      } catch (telemetryError) {
+        this.reportTelemetryFailure('telemetry.logError', telemetryError, context.traceId);
+      }
 
       // The original error, untouched: the controller still owns the mapping.
       throw error;
@@ -290,6 +309,7 @@ export class GatewayService {
 
       await this.requestLogs.finalizeFailure({
         requestLogId: started.id,
+        traceId: context.traceId,
         statusCode: 400,
         failureClass: 'CALLER_FAULT',
         errorCode: input.code,
@@ -398,13 +418,37 @@ export class GatewayService {
   ): void {
     const errorMessage = `${scope}: ${sanitizeErrorMessage(error) ?? 'unknown'}`;
 
-    this.telemetry.logError({
-      traceId,
-      errorCode: 'REQUEST_LOG_WRITE_FAILED',
-      errorMessage,
-      statusCode: 0,
-    });
+    // TOTAL: the reporter runs on the response path, so a throwing sink must
+    // degrade to the logger instead of escaping and changing the response.
+    try {
+      this.telemetry.logError({
+        traceId,
+        errorCode: 'REQUEST_LOG_WRITE_FAILED',
+        errorMessage,
+        statusCode: 0,
+      });
+    } catch (telemetryError) {
+      this.reportTelemetryFailure(scope, telemetryError, traceId);
+    }
 
     this.logger.error(`[${traceId}] ${errorMessage}`);
+  }
+
+  /**
+   * Last line for a throwing telemetry sink.
+   *
+   * Only logs: calling `reportLoggingFailure` here would recurse back into the
+   * sink that just threw.
+   */
+  private reportTelemetryFailure(
+    scope: string,
+    error: unknown,
+    traceId: string,
+  ): void {
+    this.logger.error(
+      `[${traceId}] ${scope}: telemetry sink failed: ${
+        sanitizeErrorMessage(error) ?? 'unknown'
+      }`,
+    );
   }
 }

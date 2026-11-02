@@ -136,13 +136,15 @@ function createGateway({
   requestLogs = fakeRequestLogs(),
   cost = null,
   costThrows = false,
+  router = null,
+  telemetry = null,
 } = {}) {
-  const telemetry = fakeTelemetry();
+  const gatewayTelemetry = telemetry ?? fakeTelemetry();
   const costCalls = [];
   const providerCalls = [];
 
   const service = new GatewayService(
-    {
+    router ?? {
       resolveRoute: async (model) => ({
         requestedModel: model,
         targets,
@@ -155,7 +157,7 @@ function createGateway({
       },
     },
     requestLogs,
-    telemetry,
+    gatewayTelemetry,
     { resolve: () => ({ apiKey: undefined, baseUrl: undefined, source: 'none' }) },
     new ResilienceService(),
     {
@@ -173,7 +175,7 @@ function createGateway({
   service.logger.error = () => {};
   service.logger.warn = () => {};
 
-  return { service, telemetry, costCalls, providerCalls, requestLogs };
+  return { service, telemetry: gatewayTelemetry, costCalls, providerCalls, requestLogs };
 }
 
 function request(overrides = {}) {
@@ -688,4 +690,76 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
       return true;
     },
   );
+});
+
+test('finalizes a caller-fault row when routing fails before any attempt', async () => {
+  const requestLogs = fakeRequestLogs();
+  const routingError = new HttpException(
+    { code: 'MODEL_NOT_FOUND', message: "Model 'x' not found or inactive" },
+    404,
+  );
+
+  const gateway = createGateway({
+    requestLogs,
+    router: {
+      resolveRoute: async () => {
+        throw routingError;
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      gateway.service.createCompletion(request({ model: 'x' }), contextFor()),
+    (error) => {
+      // The exact instance the router threw: the controller still owns mapping.
+      assert.equal(error, routingError);
+      return true;
+    },
+  );
+
+  // The row opened before routing is closed immediately, not left PROCESSING.
+  assert.equal(requestLogs.started.length, 1);
+  assert.equal(requestLogs.successes.length, 0);
+  assert.equal(requestLogs.attempts.length, 0);
+  assert.equal(requestLogs.failures.length, 1);
+
+  const finalized = requestLogs.failures[0];
+
+  assert.equal(finalized.requestLogId, 'log-1');
+  assert.equal(finalized.traceId, 'trace-1');
+  assert.equal(finalized.statusCode, 404);
+  assert.equal(finalized.failureClass, 'CALLER_FAULT');
+  assert.equal(finalized.errorCode, 'MODEL_NOT_FOUND');
+  assert.equal(finalized.attemptCount, 0);
+  assert.equal(finalized.fallbackUsed, false);
+
+  // The failure is observable once, and no provider was ever called.
+  assert.equal(gateway.providerCalls.length, 0);
+  assert.equal(gateway.telemetry.requests.length, 0);
+  assert.equal(gateway.telemetry.errors.length, 1);
+  assert.equal(gateway.telemetry.errors[0].errorCode, 'MODEL_NOT_FOUND');
+  assert.equal(gateway.telemetry.errors[0].statusCode, 404);
+});
+
+test('a throwing telemetry sink never changes the successful response', async () => {
+  const whatever = () => {
+    throw new Error('telemetry sink unavailable');
+  };
+
+  const gateway = createGateway({
+    requestLogs: fakeRequestLogs(),
+    telemetry: { logRequest: whatever, logError: whatever },
+  });
+
+  const response = await gateway.service.createCompletion(
+    request(),
+    contextFor(),
+  );
+
+  // Byte-for-byte the same 200 body, with only the trace ID added (S1).
+  assert.deepEqual(response, {
+    ...providerResponse().response,
+    trace_id: 'trace-1',
+  });
 });

@@ -28,6 +28,8 @@ export interface StartRequestLogInput {
  */
 export interface AttemptRecordInput {
   requestLogId: string;
+  /** Correlation key for telemetry; defaults to `requestLogId` when absent. */
+  traceId?: string;
   attemptIndex: number;
   attemptOnTarget: number;
   isFallback: boolean;
@@ -103,7 +105,9 @@ export function toAttemptRecord(
 ): AttemptRecordDraft {
   const succeeded = observation.status === 'SUCCEEDED';
   const result = succeeded ? observation.result : undefined;
-  const failure = succeeded ? null : classify(observation.error);
+  const failure = succeeded
+    ? null
+    : classifyWithoutThrowing(classify, observation.error);
   const usage = result?.response?.usage;
   const split = deriveLatencySplit(observation);
 
@@ -142,6 +146,26 @@ export function toAttemptRecord(
   };
 }
 
+/**
+ * A classifier is caller-supplied (and, in tests, a fake): a throw must not
+ * lose the attempt row. Degrade to "nothing known" and keep the write.
+ */
+function classifyWithoutThrowing(
+  classify: (error: unknown) => ClassifiedAttemptError,
+  error: unknown,
+): ClassifiedAttemptError {
+  try {
+    return classify(error);
+  } catch {
+    return {
+      failureClass: null,
+      wireCode: null,
+      message: null,
+      providerStatus: null,
+    };
+  }
+}
+
 /** `Int` column: drop NaN/Infinity rather than failing the whole insert. */
 function toTokenCount(value: number | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -153,6 +177,8 @@ function toTokenCount(value: number | undefined): number | null {
 
 export interface FinalizeSuccessInput {
   requestLogId: string;
+  /** Correlation key for telemetry; defaults to `requestLogId` when absent. */
+  traceId?: string;
   /** 200 in Phase 1. */
   statusCode: number;
   modelId: string | null;
@@ -173,6 +199,8 @@ export interface FinalizeSuccessInput {
 
 export interface FinalizeFailureInput {
   requestLogId: string;
+  /** Correlation key for telemetry; defaults to `requestLogId` when absent. */
+  traceId?: string;
   statusCode: number;
   failureClass: FailureClass;
   /** Wire code as the client sees it. */

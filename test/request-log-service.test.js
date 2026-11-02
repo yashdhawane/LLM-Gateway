@@ -81,6 +81,7 @@ function startInput(overrides = {}) {
 function attemptInput(overrides = {}) {
   return {
     requestLogId: 'log-1',
+    traceId: 'trace-1',
     attemptIndex: 0,
     attemptOnTarget: 0,
     isFallback: false,
@@ -441,13 +442,50 @@ test('a failed write is swallowed and reported to telemetry', async () => {
     assert.match(event.errorMessage, /cannot reach database server/);
   }
 
-  // Correlation key and the real status when one exists, 0 otherwise (§6.8).
+  // Correlation key: the caller's trace when supplied, the request-log id
+  // otherwise; and the real status when one exists, 0 otherwise (§6.8).
   assert.equal(telemetry.errors[0].traceId, 'trace-1');
   assert.equal(telemetry.errors[0].statusCode, 0);
-  assert.equal(telemetry.errors[1].traceId, 'log-1');
+  assert.equal(telemetry.errors[1].traceId, 'trace-1');
   assert.equal(telemetry.errors[1].statusCode, 0);
   assert.equal(telemetry.errors[2].statusCode, 200);
   assert.equal(telemetry.errors[3].statusCode, 504);
+});
+
+test('a throwing telemetry sink never escapes a failed write', async () => {
+  const databaseError = () => new Error('database unavailable');
+  const prisma = {
+    requestLog: {
+      create: async () => {
+        throw databaseError();
+      },
+      updateMany: async () => {
+        throw databaseError();
+      },
+    },
+    requestAttempt: {
+      create: async () => {
+        throw databaseError();
+      },
+    },
+    $executeRaw: async () => {
+      throw databaseError();
+    },
+  };
+  const telemetry = {
+    logError: () => {
+      throw new Error('telemetry sink unavailable');
+    },
+    logRequest: () => {},
+  };
+  const service = new RequestLogService(prisma, telemetry);
+
+  // Keep the fallback reporter quiet: it is asserted, not read.
+  service.logger.error = () => {};
+
+  // Both calls are total even when the reporter is the thing that fails.
+  assert.equal(await service.start(startInput()), null);
+  assert.equal(await service.sweepStaleProcessing(), 0);
 });
 
 // ---------------------------------------------------------------------------

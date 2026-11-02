@@ -33,7 +33,7 @@ function requestContext() {
   });
 }
 
-function createGatewayService({ failToPersist = false } = {}) {
+function createGatewayService({ failToPersist = false, startReturnsNull = false } = {}) {
   const started = [];
   const attempts = [];
   const finalized = [];
@@ -66,6 +66,9 @@ function createGatewayService({ failToPersist = false } = {}) {
     start: async (input) => {
       if (failToPersist) {
         throw new Error('database unavailable');
+      }
+      if (startReturnsNull) {
+        return null;
       }
       started.push(input);
       return { id: 'log-1' };
@@ -103,7 +106,24 @@ function createGatewayService({ failToPersist = false } = {}) {
         const timeoutMs = budgetMs !== undefined
           ? Math.min(targets[0].timeoutMs, budgetMs)
           : targets[0].timeoutMs;
-        return operation(targets[0], timeoutMs);
+
+        const startedAt = new Date();
+        const result = await operation(targets[0], timeoutMs);
+
+        // Same observation shape the real resilience loop emits (§6.3).
+        options?.onAttempt?.({
+          attemptIndex: 0,
+          attemptOnTarget: 0,
+          isFallback: false,
+          target: targets[0],
+          status: 'SUCCEEDED',
+          latencyMs: providerResponse.latencyMs,
+          result,
+          startedAt,
+          finishedAt: new Date(),
+        });
+
+        return result;
       },
     },
     // Unpriced model: cost is unknown, never zero.
@@ -153,8 +173,17 @@ test('routes a request, records usage, and returns the trace ID', async () => {
   assert.equal(state.finalized.length, 1);
   assert.equal(state.finalized[0].requestLogId, 'log-1');
   assert.equal(state.finalized[0].statusCode, 200);
+  assert.equal(state.finalized[0].traceId, 'trace-1');
   assert.equal(state.finalized[0].totalTokens, 5);
   assert.equal(state.failures.length, 0);
+
+  // The observation the loop emitted became exactly one attempt row, and the
+  // parent counts it.
+  assert.equal(state.attempts.length, 1);
+  assert.equal(state.attempts[0].requestLogId, 'log-1');
+  assert.equal(state.attempts[0].traceId, 'trace-1');
+  assert.equal(state.attempts[0].status, 'SUCCEEDED');
+  assert.equal(state.finalized[0].attemptCount, 1);
 
   // Exactly one usage event and no error event.
   assert.equal(state.telemetryEvents.length, 1);
@@ -194,4 +223,29 @@ test('returns a provider success when request-log persistence fails', async () =
   assert.equal(state.started.length, 0);
   assert.equal(state.finalized.length, 0);
   assert.equal(state.failures.length, 0);
+});
+
+test('writes no attempt rows when start returns no parent id', async () => {
+  const state = createGatewayService({ startReturnsNull: true });
+
+  const response = await state.service.createCompletion(
+    {
+      model: 'public-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    },
+    requestContext(),
+  );
+
+  // A null parent is not a failure of the request: the caller still gets 200.
+  assert.equal(response.id, 'completion-1');
+  assert.equal(response.trace_id, 'trace-1');
+
+  // Orphan attempts are worse than nothing (§6.2): no parent, no rows.
+  assert.equal(state.attempts.length, 0);
+  assert.equal(state.finalized.length, 0);
+  assert.equal(state.failures.length, 0);
+  assert.equal(state.started.length, 0);
+
+  // Telemetry is independent of the log row.
+  assert.equal(state.telemetryEvents.length, 1);
 });

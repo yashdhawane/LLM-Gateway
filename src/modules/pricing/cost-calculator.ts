@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { sanitizeErrorMessage } from '../../common/errors/failure-classifier';
 import { PricingService, type PricingSnapshot } from './pricing.service';
 
 // Declared in `pricing.service.ts` and re-exported here so consumers can import
@@ -86,6 +87,8 @@ function sideCost(
 
 @Injectable()
 export class CostCalculator {
+  private readonly logger = new Logger(CostCalculator.name);
+
   constructor(private readonly pricing: PricingService) {}
 
   /**
@@ -114,7 +117,13 @@ export class CostCalculator {
         completionTokens: input.completionTokens,
         pricing,
       });
-    } catch {
+    } catch (error) {
+      // Still total, but never silent: an unpriceable request is observable.
+      this.logger.warn(
+        `cost calculation failed for ${input.provider}/${input.model}: ${
+          sanitizeErrorMessage(error) ?? 'unknown'
+        }`,
+      );
       return null;
     }
   }

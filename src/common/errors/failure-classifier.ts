@@ -210,6 +210,16 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 /** Kept in one place so the length budget below cannot drift from it. */
 const TRUNCATION_SUFFIX = '…[truncated]';
 
+function redactSecrets(text: string): string {
+  let redacted = text;
+
+  for (const pattern of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, '[redacted]');
+  }
+
+  return redacted;
+}
+
 function stringifyForLog(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -238,11 +248,17 @@ function stringifyForLog(value: unknown): string {
  * characters, collapses whitespace, redacts known secret shapes and truncates
  * to **at most** `maxLength` characters, suffix included.
  *
- * Normalising *before* redacting is load-bearing: stripping a NUL can rejoin
- * the two halves of a secret (`sk-ab\u0000cd1234` → `sk-abcd1234`), so
- * redaction must run on the final text or the secret survives.
+ * Redaction runs both BEFORE and AFTER normalisation, and both directions are
+ * load-bearing:
+ *  - before: normalising deletes the control character that supplied the `\b`
+ *    boundary, so `abc\u0001sk-abcdef123456` would become `abcsk-abcdef123456`
+ *    and never match afterwards;
+ *  - after: stripping a NUL can rejoin the two halves of a secret
+ *    (`sk-ab\u0000cd1234` → `sk-abcd1234`), so the final text must be scanned
+ *    again or the secret survives in a new shape.
  *
- * Returns `null` for empty or whitespace-only input.
+ * Returns `null` for empty or whitespace-only input, and for a non-positive
+ * `maxLength` (nothing could be persisted within that budget).
  */
 export function sanitizeErrorMessage(
   value: unknown,
@@ -252,15 +268,18 @@ export function sanitizeErrorMessage(
     return null;
   }
 
-  let text = stringifyForLog(value);
+  if (maxLength <= 0) {
+    return null;
+  }
+
+  let text = redactSecrets(stringifyForLog(value));
 
   // Strip control characters (keeping ordinary whitespace), then collapse.
   text = text.replace(CONTROL_CHARACTERS, '');
   text = text.replace(/\s+/g, ' ').trim();
 
-  for (const pattern of SECRET_PATTERNS) {
-    text = text.replace(pattern, '[redacted]');
-  }
+  // A stripped control character can rejoin a secret: scan the final shape.
+  text = redactSecrets(text);
 
   // Redaction can leave doubled or trailing spaces behind.
   text = text.replace(/\s+/g, ' ').trim();
