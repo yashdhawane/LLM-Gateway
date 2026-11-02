@@ -20,6 +20,7 @@ model User {
   role         Role         @default(DEVELOPER)
   apiKeys      ApiKey[]
   requestLogs  RequestLog[]
+  modelPricing ModelPricing[]
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 }
@@ -76,31 +77,134 @@ model Model {
   updatedAt      DateTime     @updatedAt
 }
 
+enum RequestStatus {
+  PROCESSING
+  SUCCESS
+  FAILED
+}
+
+enum AttemptStatus {
+  SUCCEEDED
+  FAILED
+}
+
+enum FailureClass {
+  CALLER_FAULT
+  AUTH_FAULT // reserved: unreachable in Phase 1, api-key.guard rejects first
+  RATE_LIMIT
+  TIMEOUT
+  PROVIDER_UNAVAILABLE
+  PROVIDER_ERROR
+  CONFIGURATION
+  INTERNAL // reserved
+  ABANDONED
+}
+
 // Request history and usage metadata
 model RequestLog {
-  id               String   @id @default(cuid())
-  traceId          String   // correlation ID across response and logs
-  requestId        String // external request ID from client
+  id               String        @id @default(cuid())
+  traceId          String
+  requestId        String
   userId           String
   apiKeyId         String?
   modelId          String?
+  requestedModel   String // alias the caller sent; never null
+  servedModel      String? // upstream model that produced the response
   provider         String?
-  statusCode       Int      @default(0)
-  latencyMs        Int      @default(0)
-  promptTokens     Int? // only if provider supplies
-  completionTokens Int? // only if provider supplies
-  totalTokens      Int? // only if provider supplies
-  cost             Float? // only if provider supplies
-  errorCode        String? // machine-readable error code
-  errorMessage     String?
-  createdAt        DateTime @default(now())
-
-  user   User    @relation(fields: [userId], references: [id])
-  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id])
-  model  Model?  @relation(fields: [modelId], references: [id])
+  status           RequestStatus @default(PROCESSING)
+  statusCode       Int           @default(0) // HTTP status; 0 = no response produced
+  failureClass     FailureClass?
+  attemptCount     Int           @default(0)
+  fallbackUsed     Boolean       @default(false)
+  credentialId     String? // Phase 2 BYOK, no FK yet
+  isStream         Boolean       @default(false) // caller intent only; Phase 1 never streams
+  currency         String? // ISO-4217 of the winning price row
+  startedAt        DateTime      @default(now())
+  finishedAt       DateTime?
+  latencyMs        Int           @default(0) // end-to-end
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  totalCost        Decimal?      @db.Decimal(18, 10) // was cost Float?
+  pricingId        String?
+  pricing          ModelPricing? @relation(fields: [pricingId], references: [id], onDelete: SetNull)
+  errorCode        String? // wire code as the client sees it
+  errorMessage     String? // sanitized, <= 500 chars
+  createdAt        DateTime      @default(now())
+  user             User             @relation(fields: [userId], references: [id])
+  apiKey           ApiKey?          @relation(fields: [apiKeyId], references: [id])
+  model            Model?           @relation(fields: [modelId], references: [id])
+  attempts         RequestAttempt[]
 
   @@index([traceId])
-  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([provider, createdAt])
+  @@index([status, startedAt])
+  @@index([failureClass, createdAt])
   @@index([apiKeyId])
   @@index([createdAt])
+  @@index([pricingId])
+}
+
+model RequestAttempt {
+  id                 String         @id @default(cuid())
+  requestLogId       String
+  requestLog         RequestLog     @relation(fields: [requestLogId], references: [id], onDelete: Cascade)
+  attemptIndex       Int // 0-based across all targets and retries
+  attemptOnTarget    Int            @default(0) // 0 = first try of this target
+  isFallback         Boolean        @default(false) // targetIndex > 0
+  provider           String
+  model              String // public alias (RouteTarget.modelName)
+  servedModel        String? // upstream name sent / echoed back
+  credentialId       String? // Phase 2 BYOK
+  status             AttemptStatus
+  isStream           Boolean        @default(false)
+  providerStatus     Int? // ProviderError.providerStatus
+  failureClass       FailureClass? // null when SUCCEEDED
+  errorCode          String? // wire code, e.g. PROVIDER_TIMEOUT
+  errorMessage       String? // sanitized, <= 500
+  retryAfterMs       Int? // reserved; always null in Phase 1
+  latencyMs          Int // wall time of this attempt
+  upstreamLatencyMs  Int? // ProviderResponse.latencyMs on success
+  overheadMs         Int? // latencyMs - upstreamLatencyMs, clamped >= 0
+  timeToFirstTokenMs Int? // reserved for streaming; always null
+  promptTokens       Int?
+  completionTokens   Int?
+  totalTokens        Int?
+  pricingId          String?
+  pricing            ModelPricing?  @relation(fields: [pricingId], references: [id], onDelete: SetNull)
+  inputCost          Decimal?       @db.Decimal(18, 10)
+  outputCost         Decimal?       @db.Decimal(18, 10)
+  totalCost          Decimal?       @db.Decimal(18, 10)
+  providerRequestId  String? // response.id
+  createdAt          DateTime       @default(now())
+
+  @@unique([requestLogId, attemptIndex])
+  @@index([requestLogId])
+  @@index([provider, createdAt])
+  @@index([failureClass, createdAt])
+  @@index([pricingId])
+}
+
+model ModelPricing {
+  id                    String   @id @default(cuid())
+  provider              String // lowercase, matches RouteTarget.provider
+  model                 String // upstream id, matches RouteTarget.upstreamModel
+  userId                String? // null = global, set = user override
+  user                  User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency              String   @default("USD")
+  inputPricePerMillion  Decimal  @db.Decimal(18, 8)
+  outputPricePerMillion Decimal  @db.Decimal(18, 8)
+  effectiveFrom         DateTime @default(now())
+  effectiveTo           DateTime? // null = open-ended
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  requestLogs           RequestLog[]
+  requestAttempts       RequestAttempt[]
+
+  @@unique([provider, model, userId, effectiveFrom])
+  @@index([provider, model, isActive, effectiveFrom])
+  @@index([userId])
+  @@index([model])
 }

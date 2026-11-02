@@ -46,7 +46,7 @@ export class SpendService implements OnModuleInit {
           ...(endDate && { lte: endDate }),
         },
       },
-      _sum: { cost: true },
+      _sum: { totalCost: true },
       _count: { id: true },
     });
   }
@@ -60,7 +60,7 @@ export class SpendService implements OnModuleInit {
           ...(endDate && { lte: endDate }),
         },
       },
-      _sum: { cost: true },
+      _sum: { totalCost: true },
       _count: { id: true },
     });
   }
