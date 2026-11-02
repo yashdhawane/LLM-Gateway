@@ -28,6 +28,10 @@ import {
   toHttpException,
 } from '../../common/errors/failure-classifier';
 import { CurrentUser, RequestId, TraceId } from '../../common/decorators';
+import {
+  createRequestContext,
+  requestedModelFromBody,
+} from '../../common/context/request-context';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { GatewayService } from './gateway.service';
 import {
@@ -98,14 +102,23 @@ export class GatewayController {
     @TraceId() traceId: string,
     @RequestId() requestId: string,
   ) {
+    // The controller owns context construction; the gateway receives an
+    // immutable `RequestContext` and never sees the raw body (§6.1).
+    const context = createRequestContext({
+      user,
+      traceId,
+      requestId,
+      requestedModel: requestedModelFromBody(body),
+      isStream:
+        typeof body === 'object' &&
+        body !== null &&
+        (body as Record<string, unknown>).stream === true,
+    });
+
     const request = this.validateRequest(body);
 
     try {
-      return await this.gatewayService.createCompletion(request, {
-        user,
-        traceId,
-        requestId,
-      });
+      return await this.gatewayService.createCompletion(request, context);
     } catch (error) {
       if (error instanceof ProviderError) {
         throw this.mapProviderError(error);

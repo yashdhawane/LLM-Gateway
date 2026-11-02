@@ -1,7 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { AttemptObservation } from '../../common/observability/attempt-observation';
 import { ProviderError } from './base.provider';
 import { isRetryableProviderCode } from '../../common/errors/failure-classifier';
 import { RouteTarget } from '../router/router.service';
+
+export interface ResilienceOptions<T = unknown> {
+  budgetMs?: number;
+  /**
+   * Observed for every resolved and every thrown attempt, synchronously.
+   *
+   * The consumer must not throw and must not await: the loop calls it merely to
+   * report, so a slow or faulty observer cannot change routing (§6.3).
+   */
+  onAttempt?: (observation: AttemptObservation<T>) => void;
+}
 
 /**
  * Executes a routed request with:
@@ -28,7 +40,7 @@ export class ResilienceService {
   async execute<T>(
     targets: RouteTarget[],
     operation: (target: RouteTarget, timeoutMs: number) => Promise<T>,
-    options?: { budgetMs?: number },
+    options?: ResilienceOptions<T>,
   ): Promise<T> {
     if (targets.length === 0) {
       throw new ProviderError(
@@ -40,8 +52,10 @@ export class ResilienceService {
     const budgetMs = options?.budgetMs;
     const startedAt = budgetMs !== undefined ? Date.now() : undefined;
     let lastError: unknown;
+    let attemptIndex = 0;
 
-    for (const target of targets) {
+    for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+      const target = targets[targetIndex];
       const key = this.targetKey(target);
 
       if (this.isCoolingDown(key)) {
@@ -57,6 +71,7 @@ export class ResilienceService {
         if (budgetMs !== undefined && startedAt !== undefined) {
           const remainingMs = budgetMs - (Date.now() - startedAt);
           if (remainingMs <= 0) {
+            // No attempt ran, so nothing is reported: `attemptCount` stays put.
             throw new ProviderError(
               'PROVIDER_TIMEOUT',
               'Request timeout budget exhausted',
@@ -65,11 +80,47 @@ export class ResilienceService {
           effectiveTimeoutMs = Math.min(target.timeoutMs, remainingMs);
         }
 
+        const attemptStartedAt = new Date();
+
         try {
           const result = await operation(target, effectiveTimeoutMs);
+          const finishedAt = new Date();
+
+          // Reported before `recordSuccess` / `return`: a success is evidence
+          // too, and `attemptIndex` counts it.
+          this.reportAttempt(options, {
+            attemptIndex,
+            attemptOnTarget: attempt,
+            isFallback: targetIndex > 0,
+            target,
+            status: 'SUCCEEDED',
+            latencyMs: finishedAt.getTime() - attemptStartedAt.getTime(),
+            result,
+            startedAt: attemptStartedAt,
+            finishedAt,
+          });
+          attemptIndex += 1;
+
           this.recordSuccess(key);
           return result;
         } catch (error) {
+          const finishedAt = new Date();
+
+          // Reported before the retry decision: retrying must never erase the
+          // evidence that this attempt failed.
+          this.reportAttempt(options, {
+            attemptIndex,
+            attemptOnTarget: attempt,
+            isFallback: targetIndex > 0,
+            target,
+            status: 'FAILED',
+            latencyMs: finishedAt.getTime() - attemptStartedAt.getTime(),
+            error,
+            startedAt: attemptStartedAt,
+            finishedAt,
+          });
+          attemptIndex += 1;
+
           lastError = error;
 
           if (!(error instanceof ProviderError)) {
@@ -120,6 +171,31 @@ export class ResilienceService {
 
   private targetKey(target: RouteTarget): string {
     return `${target.provider}:${target.modelId}:${target.modelName}`;
+  }
+
+  /**
+   * Delivers one observation to the consumer without letting it affect routing.
+   *
+   * `onAttempt` is expected to be synchronous and non-throwing, but this is the
+   * boundary that makes that expectation non-binding: a consumer bug is logged
+   * and ignored, never propagated into the retry loop (§6.3).
+   */
+  private reportAttempt<T>(
+    options: ResilienceOptions<T> | undefined,
+    observation: AttemptObservation<T>,
+  ): void {
+    const onAttempt = options?.onAttempt;
+
+    if (!onAttempt) {
+      return;
+    }
+
+    try {
+      onAttempt(observation);
+    } catch (error) {
+      const name = error instanceof Error ? error.name : 'unknown error';
+      this.logger.warn(`Attempt observer threw (${name}); observation ignored`);
+    }
   }
 
   private recordSuccess(key: string): void {

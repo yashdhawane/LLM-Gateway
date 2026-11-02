@@ -6,10 +6,20 @@ import { ProvidersModule } from '../providers/providers.module';
 import { AuthModule } from '../auth/auth.module';
 import { TelemetryModule } from '../telemetry/telemetry.module';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { RequestLogModule } from '../logging/request-log.module';
+import { PricingModule } from '../pricing/pricing.module';
 import { GatewayService } from './gateway.service';
 
 @Module({
-  imports: [RouterModule, ProvidersModule, AuthModule, TelemetryModule, PrismaModule],
+  imports: [
+    RouterModule,
+    ProvidersModule,
+    AuthModule,
+    TelemetryModule,
+    PrismaModule,
+    RequestLogModule,
+    PricingModule,
+  ],
   controllers: [GatewayController, ModelsController],
   providers: [GatewayService],
   exports: [],

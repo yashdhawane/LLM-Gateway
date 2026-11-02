@@ -1,9 +1,16 @@
+import type { RequestContext } from '../../common/context/request-context';
 import { ChatCompletionRequest, ChatCompletionResponse } from '../router/schemas/chat-completion.schema';
 
 export interface ProviderOptions {
   baseUrl?: string;
   apiKey?: string;
   timeoutMs: number;
+  /**
+   * Request-scoped context, for adapters that need it (streaming in Phase 2).
+   *
+   * Optional and additive: `chatCompletion`'s signature is unchanged.
+   */
+  context?: RequestContext;
 }
 
 export interface ProviderResponse {

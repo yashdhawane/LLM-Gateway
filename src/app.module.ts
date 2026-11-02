@@ -10,6 +10,8 @@ import { SpendModule } from './modules/spend/spend.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
 import { InsightsModule } from './modules/insights/insights.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { RequestLogModule } from './modules/logging/request-log.module';
+import { PricingModule } from './modules/pricing/pricing.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -31,6 +33,8 @@ import { PrismaModule } from './prisma/prisma.module';
     SpendModule,
     InsightsModule,
     AdminModule,
+    RequestLogModule,
+    PricingModule,
   ],
   controllers: [],
   providers: [],
