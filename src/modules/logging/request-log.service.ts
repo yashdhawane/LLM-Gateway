@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { sanitizeErrorMessage } from '../../common/errors/failure-classifier';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TelemetryService } from '../telemetry/telemetry.module';
@@ -32,19 +33,79 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
 
   private readonly logger = new Logger(RequestLogService.name);
 
+  /** Handle kept so a test (or shutdown) can stop the sweep (§6.7). */
+  private sweepTimer?: ReturnType<typeof setInterval>;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly telemetry: TelemetryService,
   ) {}
 
-  /** Task 8 starts the stale-PROCESSING sweep here. */
+  /**
+   * Fire-and-forget sweep on boot, then every 5 minutes (§6.7).
+   *
+   * `void` because the sweep is total: it reports its own failure to telemetry
+   * and resolves, so nothing can reject here. `unref()` keeps the timer from
+   * holding the process alive.
+   */
   onModuleInit(): void {
-    // Stub: the sweep interval arrives with the sweep itself.
+    void this.sweepStaleProcessing();
+
+    this.sweepTimer = setInterval(() => {
+      void this.sweepStaleProcessing();
+    }, RequestLogService.SWEEP_INTERVAL_MS);
+
+    this.sweepTimer.unref();
   }
 
-  /** Task 8 clears the sweep interval here. */
   onModuleDestroy(): void {
-    // Stub: nothing to clear until the sweep exists.
+    if (this.sweepTimer !== undefined) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
+  }
+
+  /**
+   * Marks PROCESSING rows older than `olderThanMs` as `FAILED`/`ABANDONED`.
+   *
+   * Raw SQL, not `updateMany`: `latencyMs = now() - startedAt` references
+   * another column, which Prisma's `data` cannot express (§6.7).
+   *
+   * The `NOT EXISTS` guard is load-bearing (S3): a row that produced an attempt
+   * inside the window is provably still executing and must never be abandoned.
+   * Only `PROCESSING` rows are touched, so a finalized row is never rewritten.
+   *
+   * Returns the affected row count; never throws.
+   */
+  async sweepStaleProcessing(
+    olderThanMs: number = RequestLogService.STALE_PROCESSING_MS,
+  ): Promise<number> {
+    try {
+      const cutoff = new Date(Date.now() - olderThanMs);
+
+      // `Prisma.sql` with `${cutoff}` is a bound parameter - never interpolated.
+      const affected = await this.prisma.$executeRaw(Prisma.sql`
+        UPDATE "RequestLog" rl
+           SET "status" = 'FAILED',
+               "errorCode" = 'ABANDONED',
+               "failureClass" = 'TIMEOUT',
+               "finishedAt" = now(),
+               "latencyMs" = GREATEST(0, (EXTRACT(EPOCH FROM (now() - rl."startedAt")) * 1000)::int)
+         WHERE rl."status" = 'PROCESSING'
+           AND rl."startedAt" < ${cutoff}
+           AND NOT EXISTS (
+             SELECT 1 FROM "RequestAttempt" ra
+              WHERE ra."requestLogId" = rl."id"
+                AND ra."createdAt" > ${cutoff}
+           )
+      `);
+
+      return affected;
+    } catch (error) {
+      // No response exists for a sweep: `0` is the documented "none" (§6.8).
+      this.reportFailure('sweep', 0, error);
+      return 0;
+    }
   }
 
   /** Returns `null` (never throws) when the row cannot be written. */
