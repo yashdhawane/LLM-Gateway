@@ -84,6 +84,53 @@ async function main() {
     });
   }
 
+  // Verified USD-per-million prices. Amounts stay strings so Prisma converts
+  // them to Decimal(18, 8) without a float round-trip. Rows are append-only:
+  // a price change is a new row with a later effectiveFrom, never an update.
+  // Anthropic and Gemini are unverified and intentionally not seeded.
+  const modelPrices = [
+    { model: 'gpt-4o-mini', input: '0.15', output: '0.60' },
+    { model: 'gpt-5-mini', input: '0.25', output: '2.00' },
+    { model: 'gpt-5-nano', input: '0.05', output: '0.40' },
+    { model: 'gpt-4.1-mini', input: '0.40', output: '1.60' },
+  ];
+  const effectiveFrom = new Date('2026-01-01T00:00:00.000Z');
+  let seededPriceCount = 0;
+
+  for (const price of modelPrices) {
+    // findFirst + create: Postgres treats NULLs as distinct in the composite
+    // unique, so a global row could otherwise be duplicated by a re-seed.
+    const existingPrice = await prisma.modelPricing.findFirst({
+      where: {
+        provider: 'openai',
+        model: price.model,
+        userId: null,
+        currency: 'USD',
+        effectiveFrom,
+      },
+    });
+
+    if (existingPrice) {
+      continue;
+    }
+
+    await prisma.modelPricing.create({
+      data: {
+        provider: 'openai',
+        model: price.model,
+        userId: null,
+        currency: 'USD',
+        inputPricePerMillion: price.input,
+        outputPricePerMillion: price.output,
+        effectiveFrom,
+        isActive: true,
+      },
+    });
+
+    seededPriceCount += 1;
+  }
+
+  console.log(`Seeded ${seededPriceCount} model prices`);
   console.log(`Seeded user ${user.email} and ${models.length} models`);
 }
 
