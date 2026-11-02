@@ -313,13 +313,14 @@ test('redacts secrets and truncates long error messages', () => {
 
   const long = 'x'.repeat(600);
   const truncated = sanitizeErrorMessage(long);
-  assert.equal(truncated.startsWith('x'.repeat(500)), true);
-  assert.equal(truncated.length > 500, true);
+  // Invariant: the total, suffix included, never exceeds maxLength.
+  assert.equal(truncated.startsWith('x'.repeat(488)), true);
+  assert.equal(truncated.length <= 500, true);
   assert.equal(truncated.endsWith('…[truncated]'), true);
 
   const shortLimit = sanitizeErrorMessage('abcdefghijklmnop', 10);
   assert.equal(shortLimit.startsWith('abcdefghij'), true);
-  assert.equal(shortLimit.endsWith('…[truncated]'), true);
+  assert.equal(shortLimit.length <= 10, true);
 });
 
 test('keeps provider wire codes unchanged', () => {

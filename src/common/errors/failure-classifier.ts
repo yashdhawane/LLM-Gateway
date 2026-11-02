@@ -205,6 +205,11 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._-]+/gi,
 ];
 
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+/** Kept in one place so the length budget below cannot drift from it. */
+const TRUNCATION_SUFFIX = '…[truncated]';
+
 function stringifyForLog(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -229,8 +234,14 @@ function stringifyForLog(value: unknown): string {
 }
 
 /**
- * Makes an error message safe for persistence and logs: redacts known secret
- * shapes, strips control characters, collapses whitespace and truncates.
+ * Makes an error message safe for persistence and logs: strips control
+ * characters, collapses whitespace, redacts known secret shapes and truncates
+ * to **at most** `maxLength` characters, suffix included.
+ *
+ * Normalising *before* redacting is load-bearing: stripping a NUL can rejoin
+ * the two halves of a secret (`sk-ab\u0000cd1234` → `sk-abcd1234`), so
+ * redaction must run on the final text or the secret survives.
+ *
  * Returns `null` for empty or whitespace-only input.
  */
 export function sanitizeErrorMessage(
@@ -243,21 +254,58 @@ export function sanitizeErrorMessage(
 
   let text = stringifyForLog(value);
 
+  // Strip control characters (keeping ordinary whitespace), then collapse.
+  text = text.replace(CONTROL_CHARACTERS, '');
+  text = text.replace(/\s+/g, ' ').trim();
+
   for (const pattern of SECRET_PATTERNS) {
     text = text.replace(pattern, '[redacted]');
   }
 
-  // Strip control characters (keeping ordinary whitespace), then collapse.
-  text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  // Redaction can leave doubled or trailing spaces behind.
   text = text.replace(/\s+/g, ' ').trim();
 
   if (!text) {
     return null;
   }
 
-  if (text.length > maxLength) {
-    text = `${text.slice(0, maxLength)}…[truncated]`;
+  return truncateForLog(text, maxLength);
+}
+
+/**
+ * Truncates so the result — suffix included — is `<= maxLength`, and never
+ * splits a surrogate pair. A limit too small for the suffix falls back to a
+ * hard cut rather than overshooting the documented invariant.
+ */
+function truncateForLog(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
   }
 
-  return text;
+  if (maxLength <= 0) {
+    return '';
+  }
+
+  const budget = maxLength - TRUNCATION_SUFFIX.length;
+
+  if (budget < 1) {
+    return sliceWithoutSplittingSurrogate(text, maxLength);
+  }
+
+  return `${sliceWithoutSplittingSurrogate(text, budget)}${TRUNCATION_SUFFIX}`;
+}
+
+function sliceWithoutSplittingSurrogate(text: string, length: number): string {
+  let end = Math.max(0, Math.min(length, text.length));
+
+  // A high surrogate at the cut would leave a lone code unit behind.
+  if (end > 0 && end < text.length) {
+    const code = text.charCodeAt(end - 1);
+
+    if (code >= 0xd800 && code <= 0xdbff) {
+      end -= 1;
+    }
+  }
+
+  return text.slice(0, end);
 }
