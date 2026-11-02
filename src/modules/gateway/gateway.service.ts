@@ -257,6 +257,57 @@ export class GatewayService {
     }
   }
 
+  /**
+   * Records a request rejected before routing as a caller fault (§6.1/§8.3 #5).
+   *
+   * The row is written before the exception leaves the controller so the most
+   * common caller error (invalid body, unsupported feature) leaves evidence.
+   * No attempts are ever attached: the request never reached a provider.
+   *
+   * Fully wrapped: a logging failure must not turn the caller's 400 into a 500.
+   */
+  async recordRejectedRequest(
+    context: RequestContext,
+    input: {
+      code: 'VALIDATION_ERROR' | 'UNSUPPORTED_FEATURE';
+      message: string;
+    },
+  ): Promise<void> {
+    try {
+      const started = await this.requestLogs.start({
+        traceId: context.traceId,
+        requestId: context.requestId,
+        userId: context.userId,
+        apiKeyId: context.apiKeyId,
+        requestedModel: context.requestedModel,
+        isStream: context.isStream,
+        startedAt: context.startedAt,
+      });
+
+      if (!started) {
+        return;
+      }
+
+      await this.requestLogs.finalizeFailure({
+        requestLogId: started.id,
+        statusCode: 400,
+        failureClass: 'CALLER_FAULT',
+        errorCode: input.code,
+        errorMessage: sanitizeErrorMessage(input.message),
+        attemptCount: 0,
+        fallbackUsed: false,
+        latencyMs: 0,
+        finishedAt: new Date(),
+      });
+    } catch (error) {
+      this.reportLoggingFailure(
+        'recordRejectedRequest',
+        error,
+        context.traceId,
+      );
+    }
+  }
+
   private async callProvider(
     target: RouteTarget,
     request: Omit<ChatCompletionRequest, 'timeout'>,

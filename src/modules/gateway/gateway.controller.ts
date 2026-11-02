@@ -31,6 +31,7 @@ import { CurrentUser, RequestId, TraceId } from '../../common/decorators';
 import {
   createRequestContext,
   requestedModelFromBody,
+  type RequestContext,
 } from '../../common/context/request-context';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { GatewayService } from './gateway.service';
@@ -115,7 +116,7 @@ export class GatewayController {
         (body as Record<string, unknown>).stream === true,
     });
 
-    const request = this.validateRequest(body);
+    const request = await this.validateRequest(body, context);
 
     try {
       return await this.gatewayService.createCompletion(request, context);
@@ -127,14 +128,15 @@ export class GatewayController {
     }
   }
 
-  private validateRequest(body: unknown) {
+  private async validateRequest(body: unknown, context: RequestContext) {
     try {
       return validateChatCompletionRequest(body);
     } catch (error) {
       if (!(error instanceof ChatRequestValidationError)) {
         throw error;
       }
-      throw new HttpException(
+
+      const exception = new HttpException(
         {
           code: error.code,
           message: error.message,
@@ -143,6 +145,21 @@ export class GatewayController {
         },
         HttpStatus.BAD_REQUEST,
       );
+
+      // Rejected requests still get a CALLER_FAULT row (§6.1). The optional
+      // call keeps fakes that only implement `createCompletion` working, and
+      // the surrounding try/catch keeps a logging failure out of the response.
+      try {
+        await this.gatewayService.recordRejectedRequest?.(context, {
+          code: error.code,
+          message: error.message,
+        });
+      } catch {
+        // A logging failure must never change the caller's 400 (§S1).
+      }
+
+      // The identical exception the contract already promised.
+      throw exception;
     }
   }
 

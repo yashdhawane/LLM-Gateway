@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { HttpException } = require('@nestjs/common');
 const { Prisma } = require('@prisma/client');
 const {
   createRequestContext,
@@ -13,6 +14,9 @@ const {
 const {
   GatewayService,
 } = require('../dist/modules/gateway/gateway.service.js');
+const {
+  GatewayController,
+} = require('../dist/modules/gateway/gateway.controller.js');
 
 // In-memory only (§8.3): no database, no Nest container, no network. The
 // resilience loop is the real one; everything it talks to is a fake, so the
@@ -583,4 +587,105 @@ test('returns the provider response when the pricing lookup throws', async () =>
   }
 
   assert.equal(gateway.telemetry.requests.length, 1);
+});
+
+test('records a FAILED caller-fault row for a rejected request with no attempts', async () => {
+  const requestLogs = fakeRequestLogs();
+  const gateway = createGateway({ requestLogs });
+  let forwarded = 0;
+
+  // A real GatewayController over a real GatewayService: only `createCompletion`
+  // is short-circuited, because a rejected request must never reach it.
+  const controller = new GatewayController({
+    createCompletion: async () => {
+      forwarded += 1;
+      return {};
+    },
+    recordRejectedRequest: (context, input) =>
+      gateway.service.recordRejectedRequest(context, input),
+  });
+
+  const body = request({ stream: true });
+  let rejected;
+
+  await assert.rejects(
+    () =>
+      controller.createCompletion(
+        body,
+        { id: 'user-1', apiKeyId: 'key-1' },
+        'trace-1',
+        'request-1',
+      ),
+    (error) => {
+      rejected = error;
+
+      // The wire contract is unchanged: same code, message, param, status.
+      assert.ok(error instanceof HttpException);
+      assert.equal(error.getStatus(), 400);
+
+      const response = error.getResponse();
+
+      assert.equal(response.code, 'UNSUPPORTED_FEATURE');
+      assert.equal(
+        response.message,
+        'Streaming is not supported yet. Set stream to false or omit it.',
+      );
+      assert.equal(response.param, 'stream');
+      assert.equal(response.statusCode, 400);
+
+      return true;
+    },
+  );
+
+  // Routing was never attempted: no provider call, no attempts.
+  assert.equal(forwarded, 0);
+  assert.equal(gateway.providerCalls.length, 0);
+
+  // One PROCESSING row was opened and immediately closed as caller fault.
+  assert.equal(requestLogs.started.length, 1);
+  assert.equal(requestLogs.started[0].traceId, 'trace-1');
+  assert.equal(requestLogs.started[0].requestId, 'request-1');
+  assert.equal(requestLogs.started[0].requestedModel, 'public-model');
+  assert.equal(requestLogs.started[0].isStream, true);
+
+  assert.equal(requestLogs.attempts.length, 0);
+  assert.equal(requestLogs.successes.length, 0);
+  assert.equal(requestLogs.failures.length, 1);
+
+  const finalized = requestLogs.failures[0];
+
+  assert.equal(finalized.requestLogId, 'log-1');
+  assert.equal(finalized.statusCode, 400);
+  assert.equal(finalized.failureClass, 'CALLER_FAULT');
+  assert.equal(finalized.errorCode, 'UNSUPPORTED_FEATURE');
+  assert.equal(finalized.attemptCount, 0);
+  assert.equal(finalized.fallbackUsed, false);
+  assert.equal(finalized.latencyMs, 0);
+  assert.ok(finalized.finishedAt instanceof Date);
+
+  // A logging failure must not alter the response: identical exception.
+  const failingController = new GatewayController({
+    createCompletion: async () => {
+      throw new Error('unreachable');
+    },
+    recordRejectedRequest: async () => {
+      throw new Error('request log write failed');
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      failingController.createCompletion(
+        body,
+        { id: 'user-1', apiKeyId: 'key-1' },
+        'trace-2',
+        'request-2',
+      ),
+    (error) => {
+      assert.ok(error instanceof HttpException);
+      assert.equal(error.getStatus(), rejected.getStatus());
+      assert.deepEqual(error.getResponse(), rejected.getResponse());
+      return true;
+    },
+  );
 });
