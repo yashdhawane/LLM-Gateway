@@ -1,13 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ProviderError, ProviderErrorCode } from './base.provider';
+import { ProviderError } from './base.provider';
+import { isRetryableProviderCode } from '../../common/errors/failure-classifier';
 import { RouteTarget } from '../router/router.service';
-
-const RETRYABLE_CODES: ReadonlySet<ProviderErrorCode> = new Set([
-  'PROVIDER_TIMEOUT',
-  'PROVIDER_RATE_LIMIT',
-  'PROVIDER_UNAVAILABLE',
-  'PROVIDER_ERROR',
-]);
 
 /**
  * Executes a routed request with:
@@ -88,7 +82,7 @@ export class ResilienceService {
             throw error;
           }
 
-          const retryable = RETRYABLE_CODES.has(error.code);
+          const retryable = isRetryableProviderCode(error.code);
           const hasAnotherAttempt = attempt < target.maxRetries;
 
           // Retrying the same target immediately: leave cooldown state alone so

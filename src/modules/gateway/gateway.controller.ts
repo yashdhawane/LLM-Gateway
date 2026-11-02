@@ -23,6 +23,10 @@ import {
   validateChatCompletionRequest,
 } from '../router/schemas/chat-completion.schema';
 import { ApiErrorResponseDto } from '../../common/dto/api-error.dto';
+import {
+  classifyProviderError,
+  toHttpException,
+} from '../../common/errors/failure-classifier';
 import { CurrentUser, RequestId, TraceId } from '../../common/decorators';
 import { AuthenticatedUser } from '../auth/auth.service';
 import { GatewayService } from './gateway.service';
@@ -130,31 +134,16 @@ export class GatewayController {
   }
 
   private mapProviderError(error: ProviderError): HttpException {
-    const statusByCode = {
-      PROVIDER_TIMEOUT: HttpStatus.GATEWAY_TIMEOUT,
-      PROVIDER_RATE_LIMIT: HttpStatus.TOO_MANY_REQUESTS,
-      PROVIDER_BAD_REQUEST: HttpStatus.BAD_REQUEST,
-      PROVIDER_UNAVAILABLE: HttpStatus.BAD_GATEWAY,
-      PROVIDER_NOT_CONFIGURED: HttpStatus.SERVICE_UNAVAILABLE,
-      PROVIDER_ERROR: HttpStatus.BAD_GATEWAY,
-    } satisfies Record<ProviderError['code'], number>;
-    const messageByCode = {
-      PROVIDER_TIMEOUT: 'Provider request timed out.',
-      PROVIDER_RATE_LIMIT: 'Provider rate limit exceeded.',
-      PROVIDER_BAD_REQUEST: 'Provider rejected the request.',
-      PROVIDER_UNAVAILABLE: 'Provider is unavailable.',
-      PROVIDER_NOT_CONFIGURED: 'Provider is not configured.',
-      PROVIDER_ERROR: 'Provider request failed.',
-    } satisfies Record<ProviderError['code'], string>;
+    // Status code, wire code and client-facing message all come from the
+    // shared taxonomy so the response contract has a single owner (§6.4).
+    const exception = toHttpException(classifyProviderError(error));
 
-    const status = statusByCode[error.code];
-    return new HttpException(
-      {
-        code: error.code,
-        message: messageByCode[error.code],
-        statusCode: status,
-      },
-      status,
-    );
+    // A classified provider error always rebuilds an HttpException; anything
+    // else is not ours to translate.
+    if (!(exception instanceof HttpException)) {
+      throw error;
+    }
+
+    return exception;
   }
 }
