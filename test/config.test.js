@@ -97,8 +97,7 @@ test('validateEnv rejects a short JWT secret', () => {
   );
 });
 
-test('validateEnv drops variables that are not part of the schema', () => {
-  const env = validateEnv({
+test('validateEnv drops variables that are not part of the schema', () => {  const env = validateEnv({
     DATABASE_URL: databaseUrl,
     JWT_SECRET: jwtSecret,
     LEGACY_SETTING: 'should-not-be-used',
@@ -106,4 +105,30 @@ test('validateEnv drops variables that are not part of the schema', () => {
 
   assert.equal(env.LEGACY_SETTING, undefined);
   assert.equal(env.JWT_SECRET, jwtSecret);
+});
+
+test('validateEnv keeps Swagger disabled unless a local .env opts in', () => {
+  const base = { DATABASE_URL: databaseUrl, JWT_SECRET: jwtSecret };
+
+  assert.equal(validateEnv(base).SWAGGER_ENABLED, false);
+  assert.equal(
+    validateEnv({ ...base, SWAGGER_ENABLED: 'false' }).SWAGGER_ENABLED,
+    false,
+  );
+  assert.equal(
+    validateEnv({ ...base, SWAGGER_ENABLED: 'true' }).SWAGGER_ENABLED,
+    true,
+  );
+});
+
+test('validateEnv rejects a Swagger flag that is not true or false', () => {
+  assert.throws(
+    () =>
+      validateEnv({
+        DATABASE_URL: databaseUrl,
+        JWT_SECRET: jwtSecret,
+        SWAGGER_ENABLED: 'yes',
+      }),
+    /SWAGGER_ENABLED/,
+  );
 });

@@ -73,6 +73,19 @@ hung connection cannot hang the probe, and the response carries no version,
 configuration or secret. Health calls are excluded from the request log to keep
 monitoring traffic out of it.
 
+## API docs
+
+Swagger UI at `/docs` is opt-in and off by default. It publishes every route,
+schema and error contract, so an instance reachable from the internet should
+not serve it:
+
+```bash
+SWAGGER_ENABLED=true npm run start:dev   # local only
+```
+
+The flag is validated at boot (`true`/`false`, default `false`), so a typo fails
+fast instead of silently enabling the docs.
+
 ## Deployment
 
 Both RequestLog migrations are additive. The foundation migration backfills every existing row to `SUCCESS`/`FAILED` from `errorCode`, so no legacy row becomes `PROCESSING`; the heartbeat migration backfills `heartbeatAt` from `startedAt`. The migration must not overlap application writes, so drain traffic first.

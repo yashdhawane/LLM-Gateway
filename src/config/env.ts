@@ -18,6 +18,15 @@ const envSchema = z.object({
     ),
   JWT_SECRET: z.string().min(32, 'must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().min(1).default('7d'),
+  /**
+   * Swagger UI at /docs. Opt-in on purpose: it publishes every route, schema
+   * and error contract, so a deployment reachable from the internet should
+   * never serve it. Only a local development instance sets this to `true`.
+   */
+  SWAGGER_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),

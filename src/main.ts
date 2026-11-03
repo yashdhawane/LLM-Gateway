@@ -13,7 +13,12 @@ async function bootstrap() {
   const config = app.get(ConfigService);
 
   configureApp(app, config);
-  setupSwagger(app);
+
+  // Development aid only: Swagger documents every route, schema and error
+  // contract, so it is served only when a local .env opts in.
+  if (config.get<boolean>('SWAGGER_ENABLED')) {
+    setupSwagger(app);
+  }
 
   const port = config.getOrThrow<number>('PORT');
   await app.listen(port, '0.0.0.0');
