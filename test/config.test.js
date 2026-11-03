@@ -97,7 +97,8 @@ test('validateEnv rejects a short JWT secret', () => {
   );
 });
 
-test('validateEnv drops variables that are not part of the schema', () => {  const env = validateEnv({
+test('validateEnv drops variables that are not part of the schema', () => {
+  const env = validateEnv({
     DATABASE_URL: databaseUrl,
     JWT_SECRET: jwtSecret,
     LEGACY_SETTING: 'should-not-be-used',
@@ -130,5 +131,71 @@ test('validateEnv rejects a Swagger flag that is not true or false', () => {
         SWAGGER_ENABLED: 'yes',
       }),
     /SWAGGER_ENABLED/,
+  );
+});
+
+// --- CORS origins ---------------------------------------------------------
+//
+// The browser only gets to call this API when the origin is on the list, and
+// the credentials flag means a wildcard would hand any site the user's session.
+// These tests pin the list's defaults, its parsing and the shapes it refuses.
+
+const corsBase = { DATABASE_URL: databaseUrl, JWT_SECRET: jwtSecret };
+
+test('validateEnv allows the Next.js dev server by default in development', () => {
+  const env = validateEnv(corsBase);
+
+  assert.deepEqual(env.CORS_ORIGINS, ['http://localhost:3000']);
+});
+
+test('validateEnv allows no browser origin by default outside development', () => {
+  for (const NODE_ENV of ['staging', 'production']) {
+    const env = validateEnv({ ...corsBase, NODE_ENV });
+
+    assert.deepEqual(env.CORS_ORIGINS, [], NODE_ENV);
+  }
+});
+
+test('validateEnv splits, trims and normalises an explicit origin list', () => {
+  const env = validateEnv({
+    ...corsBase,
+    CORS_ORIGINS:
+      ' https://app.example.com , HTTP://LocalHost:3000/ , , https://preview.example.com ',
+  });
+
+  assert.deepEqual(env.CORS_ORIGINS, [
+    'https://app.example.com',
+    'http://localhost:3000',
+    'https://preview.example.com',
+  ]);
+});
+
+test('validateEnv rejects an origin that carries a path or a query', () => {
+  for (const value of [
+    'https://app.example.com/api',
+    'https://app.example.com/?next=1',
+  ]) {
+    assert.throws(
+      () => validateEnv({ ...corsBase, CORS_ORIGINS: value }),
+      /CORS_ORIGINS/,
+      value,
+    );
+  }
+});
+
+test('validateEnv rejects an entry that is not an absolute http origin', () => {
+  for (const value of ['localhost:3000', 'ftp://app.example.com', 'app.example.com']) {
+    assert.throws(
+      () => validateEnv({ ...corsBase, CORS_ORIGINS: value }),
+      /CORS_ORIGINS/,
+      value,
+    );
+  }
+});
+
+test('validateEnv rejects a wildcard origin because credentials are allowed', () => {
+  assert.throws(
+    () => validateEnv({ ...corsBase, CORS_ORIGINS: '*' }),
+    /CORS_ORIGINS/,
   );
 });

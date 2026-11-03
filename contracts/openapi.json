@@ -1,0 +1,884 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "HealthController_check",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Process is up and the database answers"
+          },
+          "503": {
+            "description": "Process is up but the database does not answer"
+          }
+        },
+        "summary": "Readiness probe: process and database",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/v1/auth/signup": {
+      "post": {
+        "operationId": "AuthController_signup",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created"
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Create a developer account",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful"
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Log in and receive a JWT",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/keys": {
+      "post": {
+        "operationId": "AuthController_createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "API key created successfully"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "Create a new API key",
+        "tags": [
+          "auth"
+        ]
+      },
+      "get": {
+        "operationId": "AuthController_listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "API keys listed"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "List all API keys for the current user",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/keys/{id}": {
+      "delete": {
+        "operationId": "AuthController_revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "Revoke an API key",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "operationId": "AuthController_getProfile",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "User profile"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "Get current user profile",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/chat/completions": {
+      "post": {
+        "description": "OpenAI-compatible, non-streaming text chat. Unsupported features are rejected with a structured UNSUPPORTED_FEATURE error.",
+        "operationId": "GatewayController_createCompletion",
+        "parameters": [
+          {
+            "name": "x-request-id",
+            "in": "header",
+            "description": "Optional client request ID. Falls back to the gateway trace ID when omitted.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequestDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error or unsupported request feature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found or inactive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Provider rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider credentials are not configured or the provider is unsupported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Provider request timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api-key": []
+          }
+        ],
+        "summary": "Create a chat completion",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "operationId": "ModelsController_listModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelListDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api-key": []
+          }
+        ],
+        "summary": "List models available to the current API key",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/insights/me": {
+      "get": {
+        "operationId": "InsightsController_getMyInsights",
+        "parameters": [],
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "Get usage insights for the current user",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/v1/admin/insights": {
+      "get": {
+        "operationId": "AdminController_getAllUserInsights",
+        "parameters": [],
+        "responses": {
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwt": []
+          }
+        ],
+        "summary": "Get usage insights for all users",
+        "tags": [
+          "admin"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "LLM Gateway API",
+    "description": "OpenAI-compatible, non-streaming text chat gateway. Unsupported request features return a structured UNSUPPORTED_FEATURE error.",
+    "version": "1.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "api-key": {
+        "scheme": "bearer",
+        "bearerFormat": "API Key",
+        "type": "http",
+        "description": "Enter your API key"
+      },
+      "jwt": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http",
+        "description": "Enter the JWT returned by /auth/login or /auth/signup"
+      }
+    },
+    "schemas": {
+      "SignupDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "user@example.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "strong-password",
+            "minLength": 8
+          },
+          "name": {
+            "type": "string",
+            "example": "Yash"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "ApiErrorDetailDto": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Unsupported request field."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "invalid_request_error",
+              "authentication_error",
+              "permission_error",
+              "not_found_error",
+              "conflict_error",
+              "rate_limit_error",
+              "server_error"
+            ],
+            "example": "invalid_request_error"
+          },
+          "param": {
+            "type": "object",
+            "nullable": true,
+            "example": null,
+            "description": "Request field that caused the error, when applicable."
+          },
+          "code": {
+            "type": "string",
+            "example": "UNSUPPORTED_FEATURE"
+          },
+          "trace_id": {
+            "type": "string",
+            "example": "0f6f3d9d-5b6f-4b7e-9c2a-1f6f3d9d5b6f"
+          },
+          "status_code": {
+            "type": "number",
+            "example": 400
+          },
+          "timestamp": {
+            "type": "string",
+            "example": "2026-10-24T15:20:16.452Z"
+          }
+        },
+        "required": [
+          "message",
+          "type",
+          "param",
+          "code",
+          "status_code",
+          "timestamp"
+        ]
+      },
+      "ApiErrorResponseDto": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorDetailDto"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "user@example.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "strong-password"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "CreateApiKeyDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "my-app"
+          }
+        }
+      },
+      "ChatMessageDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "developer"
+            ],
+            "example": "user"
+          },
+          "content": {
+            "type": "string",
+            "example": "Hello from my application"
+          },
+          "name": {
+            "type": "string",
+            "example": "user-123"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
+      },
+      "ChatCompletionRequestDto": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "example": "mock"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageDto"
+            }
+          },
+          "temperature": {
+            "type": "number",
+            "example": 0.7,
+            "minimum": 0,
+            "maximum": 2
+          },
+          "top_p": {
+            "type": "number",
+            "example": 1,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "n": {
+            "type": "number",
+            "example": 1,
+            "description": "Only n=1 is supported. Other values return UNSUPPORTED_FEATURE."
+          },
+          "stream": {
+            "type": "boolean",
+            "example": false,
+            "description": "Streaming is not supported yet. Set false or omit; true returns UNSUPPORTED_FEATURE."
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "example": [
+              "END"
+            ]
+          },
+          "max_tokens": {
+            "type": "number",
+            "example": 256
+          },
+          "max_completion_tokens": {
+            "type": "number",
+            "example": 256
+          },
+          "presence_penalty": {
+            "type": "number",
+            "example": 0,
+            "minimum": -2,
+            "maximum": 2
+          },
+          "frequency_penalty": {
+            "type": "number",
+            "example": 0,
+            "minimum": -2,
+            "maximum": 2
+          },
+          "logit_bias": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "example": {
+              "50256": -100
+            }
+          },
+          "user": {
+            "type": "string",
+            "example": "end-user-123"
+          },
+          "seed": {
+            "type": "number",
+            "example": 42
+          },
+          "timeout": {
+            "type": "number",
+            "example": 30000,
+            "description": "Gateway-specific timeout in milliseconds."
+          }
+        },
+        "required": [
+          "model",
+          "messages"
+        ]
+      },
+      "ChatCompletionResponseMessageDto": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "example": "assistant"
+          },
+          "content": {
+            "type": "string",
+            "example": "Hello! How can I help?"
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
+      "ChatCompletionChoiceDto": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "number",
+            "example": 0
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatCompletionResponseMessageDto"
+          },
+          "finish_reason": {
+            "type": "object",
+            "example": "stop",
+            "nullable": true
+          }
+        },
+        "required": [
+          "index",
+          "message",
+          "finish_reason"
+        ]
+      },
+      "ChatCompletionUsageDto": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "number",
+            "example": 12
+          },
+          "completion_tokens": {
+            "type": "number",
+            "example": 20
+          },
+          "total_tokens": {
+            "type": "number",
+            "example": 32
+          }
+        }
+      },
+      "ChatCompletionResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "chatcmpl_mock_1761319216452"
+          },
+          "object": {
+            "type": "string",
+            "example": "chat.completion"
+          },
+          "created": {
+            "type": "number",
+            "example": 1761319216
+          },
+          "model": {
+            "type": "string",
+            "example": "mock"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatCompletionChoiceDto"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ChatCompletionUsageDto"
+          },
+          "trace_id": {
+            "type": "string",
+            "example": "0f6f3d9d-5b6f-4b7e-9c2a-1f6f3d9d5b6f"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices"
+        ]
+      },
+      "ModelDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "mock"
+          },
+          "object": {
+            "type": "string",
+            "example": "model"
+          },
+          "created": {
+            "type": "number",
+            "example": 1761319216
+          },
+          "owned_by": {
+            "type": "string",
+            "example": "mock"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "created",
+          "owned_by"
+        ]
+      },
+      "ModelListDto": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "example": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDto"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      }
+    }
+  }
+}

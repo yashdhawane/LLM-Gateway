@@ -10,7 +10,9 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/config.test.js test/chat-contract.test.js test/error-contract.test.js test/error-taxonomy.test.js test/seed.test.js test/health.test.js test/gateway-service.test.js test/resilience.test.js test/credential-manager.test.js test/provider-normalization.test.js test/provider-http.test.js test/request-context.test.js test/cost-calculator.test.js test/request-log-service.test.js test/request-log-liveness.test.js test/gateway-logging.test.js test/router-service.test.js test/migration-sql.test.js",
+    "contract:export": "ts-node -T src/scripts/export-openapi.ts",
+    "contract:check": "npm run contract:export && git diff --exit-code -- contracts/openapi.json",
+    "test": "npm run build && node --test test/config.test.js test/contract.test.js test/chat-contract.test.js test/error-contract.test.js test/error-taxonomy.test.js test/seed.test.js test/health.test.js test/gateway-service.test.js test/resilience.test.js test/credential-manager.test.js test/provider-normalization.test.js test/provider-http.test.js test/request-context.test.js test/cost-calculator.test.js test/request-log-service.test.js test/request-log-liveness.test.js test/gateway-logging.test.js test/router-service.test.js test/migration-sql.test.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"
@@ -23,6 +25,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@fastify/cors": "^11.4.0",
     "@fastify/static": "^10.1.7",
     "@nestjs/axios": "^12.0.1",
     "@nestjs/common": "^12.2.0",
