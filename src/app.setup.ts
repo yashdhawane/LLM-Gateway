@@ -22,7 +22,10 @@ export function configureApp(app: INestApplication, config: ConfigService): void
     done();
   });
 
-  app.setGlobalPrefix('api/v1');
+  // `health` is excluded so a monitor can call the conventional `/health`
+  // instead of the versioned `/api/v1/health`, which would change with every
+  // API version bump.
+  app.setGlobalPrefix('api/v1', { exclude: ['health'] });
 
   app.useGlobalPipes(
     new ValidationPipe({

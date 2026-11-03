@@ -35,6 +35,14 @@ export class LoggingInterceptor implements NestInterceptor {
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
+
+    // A readiness probe can run every few seconds. Logging it would drown the
+    // real request log without adding information.
+    const requestUrl = String(request.url ?? '');
+    if (requestUrl === '/health' || requestUrl.startsWith('/health?')) {
+      return next.handle();
+    }
+
     const start = Date.now();
 
     const traceId = request.traceId ?? request.id;

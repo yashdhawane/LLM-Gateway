@@ -8,6 +8,7 @@ import { ProvidersModule } from './modules/providers/providers.module';
 import { TelemetryModule } from './modules/telemetry/telemetry.module';
 import { SpendModule } from './modules/spend/spend.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
+import { HealthModule } from './modules/health/health.module';
 import { InsightsModule } from './modules/insights/insights.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { RequestLogModule } from './modules/logging/request-log.module';
@@ -25,6 +26,7 @@ import { PrismaModule } from './prisma/prisma.module';
     }),
     EventEmitterModule.forRoot(),
     PrismaModule,
+    HealthModule,
     AuthModule,
     RouterModule,
     ProvidersModule,

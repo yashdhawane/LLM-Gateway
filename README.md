@@ -45,6 +45,23 @@ Without `pgbouncer=true`, a multi-column `RequestLog` finalization can fail with
 
 Prisma Migrate cannot run through the pooler because it needs a single session. Point `DATABASE_URL` at the direct (unpooled) host for migration commands: the same string without `-pooler` and without `pgbouncer=true`.
 
+## Health probe
+
+`GET /health` is public and stays outside the versioned prefix, so a monitor
+can call it without an API key:
+
+```bash
+curl -s http://localhost:3000/health
+# {"status":"ok","db":"up","uptimeSeconds":123}
+```
+
+It is a readiness probe rather than plain liveness: the database is part of the
+answer, so an unusable database returns `503` with
+`{"status":"degraded","db":"down"}`. The query is bounded at two seconds, so a
+hung connection cannot hang the probe, and the response carries no version,
+configuration or secret. Health calls are excluded from the request log to keep
+monitoring traffic out of it.
+
 ## Deployment
 
 Both RequestLog migrations are additive. The foundation migration backfills every existing row to `SUCCESS`/`FAILED` from `errorCode`, so no legacy row becomes `PROCESSING`; the heartbeat migration backfills `heartbeatAt` from `startedAt`. The migration must not overlap application writes, so drain traffic first.
