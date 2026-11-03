@@ -8,7 +8,9 @@ import { z } from 'zod';
  */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  // 4000 on purpose: the Next.js frontend in its own repository uses the
+  // conventional 3000, so both can run side by side without a port clash.
+  PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   DATABASE_URL: z
     .string()
     .min(1)

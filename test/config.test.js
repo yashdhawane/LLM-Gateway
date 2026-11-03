@@ -9,7 +9,7 @@ test('validateEnv applies defaults for optional server settings', () => {
   const env = validateEnv({ DATABASE_URL: databaseUrl, JWT_SECRET: jwtSecret });
 
   assert.equal(env.NODE_ENV, 'development');
-  assert.equal(env.PORT, 3000);
+  assert.equal(env.PORT, 4000);
   assert.equal(env.JWT_EXPIRES_IN, '7d');
   assert.equal(env.LOG_LEVEL, 'info');
   assert.equal(env.OPENAI_API_KEY, undefined);

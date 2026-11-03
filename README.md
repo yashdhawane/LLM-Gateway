@@ -62,7 +62,7 @@ Two application behaviours matter:
 can call it without an API key:
 
 ```bash
-curl -s http://localhost:3000/health
+curl -s http://localhost:4000/health
 # {"status":"ok","db":"up","uptimeSeconds":123}
 ```
 
@@ -178,10 +178,14 @@ npm run start:dev      # watch mode
 npm run build && npm run start:prod
 ```
 
-- API base: `http://localhost:3000/api/v1`
-- Swagger UI: `http://localhost:3000/docs`
+- API base: `http://localhost:4000/api/v1`
+- Swagger UI: `http://localhost:4000/docs`
 
-For the OpenAI SDK, use `http://localhost:3000/api/v1` as the base URL. The SDK appends `/chat/completions` and `/models` to it.
+Ports are split on purpose: the gateway listens on **4000** and the Next.js
+frontend (separate repository) keeps the conventional **3000**, so both run side
+by side without a clash. `PORT` in `.env` is the only place to change it.
+
+For the OpenAI SDK, use `http://localhost:4000/api/v1` as the base URL. The SDK appends `/chat/completions` and `/models` to it.
 
 ## Providers and credentials
 
@@ -342,32 +346,32 @@ Common status codes:
 
 ```bash
 # 1. Sign up (or log in) and capture the JWT
-curl -X POST http://localhost:3000/api/v1/auth/signup \
+curl -X POST http://localhost:4000/api/v1/auth/signup \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secret-password-123","name":"User"}'
 
 # 2. Create an API key with the JWT
-curl -X POST http://localhost:3000/api/v1/auth/keys \
+curl -X POST http://localhost:4000/api/v1/auth/keys \
   -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
   -d '{"name":"my-app"}'
 
 # 3. List available models
-curl http://localhost:3000/api/v1/models \
+curl http://localhost:4000/api/v1/models \
   -H "Authorization: Bearer <rawKey>"
 
 # 4. Use the returned rawKey for chat
-curl -X POST http://localhost:3000/api/v1/chat/completions \
+curl -X POST http://localhost:4000/api/v1/chat/completions \
   -H "Authorization: Bearer <rawKey>" \
   -H "Content-Type: application/json" \
   -d '{"model":"mock","messages":[{"role":"user","content":"hello"}]}'
 
 # 5. View your own insights
-curl http://localhost:3000/api/v1/insights/me \
+curl http://localhost:4000/api/v1/insights/me \
   -H "Authorization: Bearer <jwt>"
 
 # 6. View all user insights as the seeded admin
-curl http://localhost:3000/api/v1/admin/insights \
+curl http://localhost:4000/api/v1/admin/insights \
   -H "Authorization: Bearer <admin-jwt>"
 ```
 
