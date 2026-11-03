@@ -2,7 +2,11 @@ import {
   ChatCompletionRequest,
   ChatCompletionResponse,
 } from '../router/schemas/chat-completion.schema';
-import { ProviderError } from './base.provider';
+import type { SseBlock } from '../../common/sse/sse-parser';
+import {
+  ChatCompletionChunk,
+  ProviderError,
+} from './base.provider';
 
 export interface AnthropicMessage {
   role: 'user' | 'assistant';
@@ -128,12 +132,7 @@ export function toChatCompletionResponse(
     .map((part) => part.text)
     .join('');
 
-  const finishReason =
-    response.stop_reason === 'max_tokens'
-      ? 'length'
-      : response.stop_reason === 'tool_use'
-        ? 'tool_calls'
-        : 'stop';
+  const finishReason = mapStopReason(response.stop_reason);
 
   const usage = response.usage
     ? {
@@ -163,4 +162,151 @@ export function toChatCompletionResponse(
     usage,
     trace_id: traceId,
   };
+}
+
+/** Anthropic stop reasons in the OpenAI vocabulary the gateway publishes. */
+export function mapStopReason(stopReason: string | null | undefined): string {
+  if (stopReason === 'max_tokens') {
+    return 'length';
+  }
+
+  if (stopReason === 'tool_use') {
+    return 'tool_calls';
+  }
+
+  return 'stop';
+}
+
+/**
+ * State carried across the events of one Anthropic stream.
+ *
+ * Anthropic identifies the message once, in `message_start`, and reports input
+ * tokens there and output tokens at the end, so each event needs what the
+ * previous ones established.
+ */
+export interface AnthropicStreamState {
+  id: string;
+  model: string;
+  created: number;
+  promptTokens?: number;
+}
+
+export function createAnthropicStreamState(
+  fallbackModel: string,
+): AnthropicStreamState {
+  return {
+    id: `chatcmpl_anthropic_${Date.now()}`,
+    model: fallbackModel,
+    created: Math.floor(Date.now() / 1000),
+  };
+}
+
+interface AnthropicStreamEvent {
+  type?: string;
+  message?: AnthropicResponse;
+  delta?: {
+    type?: string;
+    text?: string;
+    stop_reason?: string | null;
+  };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+}
+
+/**
+ * Translates one Anthropic stream event into zero or more OpenAI chunks.
+ *
+ * Anthropic names its events and splits the message across several of them;
+ * the OpenAI format the gateway publishes has a single shape for every event,
+ * so `message_start` becomes the role delta, `content_block_delta` the text,
+ * and `message_delta` the finish reason plus usage.
+ */
+export function toChatCompletionChunks(
+  block: SseBlock,
+  state: AnthropicStreamState,
+): ChatCompletionChunk[] {
+  let event: AnthropicStreamEvent;
+
+  try {
+    event = JSON.parse(block.data) as AnthropicStreamEvent;
+  } catch {
+    throw new ProviderError(
+      'PROVIDER_ERROR',
+      'The provider sent a malformed stream event.',
+    );
+  }
+
+  if (typeof event !== 'object' || event === null) {
+    throw new ProviderError(
+      'PROVIDER_ERROR',
+      'The provider sent a malformed stream event.',
+    );
+  }
+
+  const chunk = (
+    choices: ChatCompletionChunk['choices'],
+    usage?: ChatCompletionChunk['usage'],
+  ): ChatCompletionChunk => ({
+    id: state.id,
+    object: 'chat.completion.chunk',
+    created: state.created,
+    model: state.model,
+    choices,
+    ...(usage ? { usage } : {}),
+  });
+
+  switch (event.type) {
+    case 'message_start': {
+      const message = event.message ?? {};
+      state.id = message.id ?? state.id;
+      state.model = message.model ?? state.model;
+      state.promptTokens = message.usage?.input_tokens;
+
+      return [
+        chunk([{ index: 0, delta: { role: 'assistant' }, finish_reason: null }]),
+      ];
+    }
+
+    case 'content_block_delta': {
+      const text = event.delta?.type === 'text_delta' ? event.delta.text : undefined;
+
+      if (typeof text !== 'string' || text === '') {
+        return [];
+      }
+
+      return [chunk([{ index: 0, delta: { content: text }, finish_reason: null }])];
+    }
+
+    case 'message_delta': {
+      const completionTokens = event.usage?.output_tokens;
+      const usage =
+        completionTokens === undefined
+          ? undefined
+          : {
+              prompt_tokens: state.promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: (state.promptTokens ?? 0) + completionTokens,
+            };
+
+      return [
+        chunk(
+          [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: mapStopReason(event.delta?.stop_reason),
+            },
+          ],
+          usage,
+        ),
+      ];
+    }
+
+    // `ping`, `content_block_start/stop` and `message_stop` carry nothing the
+    // OpenAI format has a place for.
+    default:
+      return [];
+  }
 }

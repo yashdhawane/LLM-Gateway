@@ -4,6 +4,7 @@ import { OpenAIProvider } from './openai.provider';
 import { AnthropicProvider } from './anthropic.provider';
 import { MockProvider } from './mock.provider';
 import {
+  ChatCompletionChunk,
   LLMProvider,
   ProviderError,
   ProviderOptions,
@@ -48,6 +49,31 @@ export class ProviderService {
   ): Promise<ProviderResponse> {
     const provider = this.getProvider(providerName);
     return provider.chatCompletion(request, options, traceId);
+  }
+
+  /**
+   * Returns the provider's chunk stream. Deferred, not `async`: the caller
+   * starts consuming immediately and must receive the iterable synchronously.
+   *
+   * A provider without streaming is an adapter bug, not a caller mistake, so it
+   * surfaces as an internal error instead of a made-up wire code. Every
+   * registered provider implements it.
+   */
+  streamChatCompletion(
+    providerName: string,
+    request: ChatCompletionRequest,
+    options: ProviderOptions,
+    traceId: string,
+  ): AsyncIterable<ChatCompletionChunk> {
+    const provider = this.getProvider(providerName);
+
+    if (!provider.streamChatCompletion) {
+      throw new Error(
+        `Provider '${providerName}' does not implement streamChatCompletion.`,
+      );
+    }
+
+    return provider.streamChatCompletion(request, options, traceId);
   }
 
   async healthCheck(

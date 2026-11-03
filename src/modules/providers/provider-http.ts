@@ -1,5 +1,6 @@
 import { HttpService } from '@nestjs/axios';
 import { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { Readable } from 'node:stream';
 import { firstValueFrom } from 'rxjs';
 import { ProviderError } from './base.provider';
 
@@ -25,6 +26,53 @@ export async function requestWithTimeout<T>(
     );
   } catch (error) {
     if (controller.signal.aborted) {
+      throw new ProviderError('PROVIDER_TIMEOUT', 'Provider request timed out');
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Opens a server-sent-event response and returns the byte stream.
+ *
+ * `timeoutMs` bounds the wait for the response headers only; once the stream is
+ * open the caller owns it and enforces idle and total limits. The caller's
+ * `signal` stays attached after this function returns, so aborting it later
+ * destroys the socket and stops a provider that is already talking.
+ */
+export async function openEventStream(
+  httpService: HttpService,
+  config: AxiosRequestConfig,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Readable> {
+  const controller = new AbortController();
+
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+
+  try {
+    const response = await firstValueFrom(
+      httpService.request<Readable>({
+        ...config,
+        responseType: 'stream',
+        signal: controller.signal,
+      }),
+    );
+
+    return response.data;
+  } catch (error) {
+    if (controller.signal.aborted && !signal?.aborted) {
       throw new ProviderError('PROVIDER_TIMEOUT', 'Provider request timed out');
     }
 

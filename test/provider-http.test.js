@@ -172,6 +172,67 @@ test('Anthropic adapter translates request and response formats', async () => {
   });
 });
 
+test('OpenAI streaming always asks for usage, whatever the client chose', async () => {
+  let seen;
+
+  await withServer(
+    async (request, response) => {
+      seen = {
+        url: request.url,
+        body: await readBody(request),
+      };
+      response.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+      });
+      response.end(
+        [
+          'data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}',
+          '',
+          'data: {"id":"chatcmpl_stream","object":"chat.completion.chunk","created":1,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+          '',
+          'data: [DONE]',
+          '',
+        ].join('\n'),
+      );
+    },
+    async (baseUrl) => {
+      const provider = quiet(new OpenAIProvider(new HttpService()));
+      const chunks = [];
+
+      for await (const chunk of provider.streamChatCompletion(
+        {
+          model: 'gpt-test',
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        },
+        { baseUrl: `${baseUrl}/v1`, apiKey: 'sk-test', timeoutMs: 1000 },
+        'trace-stream',
+      )) {
+        chunks.push(chunk);
+      }
+
+      assert.equal(chunks.length, 2);
+      assert.equal(chunks[0].choices[0].delta.content, 'hi');
+      // The usage travels inside the stream so the gateway can log tokens even
+      // when the client never asked for them; the gateway re-emits it alone.
+      assert.deepEqual(chunks[1].usage, {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        total_tokens: 2,
+      });
+      assert.equal(chunks[1].trace_id, 'trace-stream');
+    },
+  );
+
+  assert.equal(seen.url, '/v1/chat/completions');
+  assert.deepEqual(seen.body, {
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+});
+
 test('provider timeout aborts the upstream request', async () => {
   await withServer(
     () => {},
