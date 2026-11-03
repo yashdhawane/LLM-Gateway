@@ -15,3 +15,6 @@ src/generated/
 *.tsbuildinfo
 CAPABILITY_MATRIX.csv
 LITELLM_GAP_INVESTIGATION_REPORT.md
+# Local OpenCode workspace (agents, commands, skills, node_modules); not part
+# of the gateway build or runtime.
+.opencode/
