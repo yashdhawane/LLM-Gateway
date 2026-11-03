@@ -499,10 +499,15 @@ test('a throwing telemetry sink never escapes a failed write', async () => {
 const MINUTE = 60 * 1000;
 
 function sweepRow(overrides = {}) {
+  const startedAt = overrides.startedAt ?? new Date(Date.now() - 20 * MINUTE);
+
   return {
     id: 'log-1',
     status: 'PROCESSING',
-    startedAt: new Date(Date.now() - 20 * MINUTE),
+    startedAt,
+    // Liveness defaults to the start time: a row with no recorded heartbeat is
+    // only as fresh as the moment it began.
+    heartbeatAt: overrides.heartbeatAt ?? startedAt,
     finishedAt: null,
     latencyMs: null,
     errorCode: null,
@@ -537,6 +542,24 @@ function fakeSweepPrisma({ rows = [], attempts = [] } = {}) {
     $executeRaw: async (query) => {
       queries.push(query);
 
+      // Durable heartbeat: `SET "heartbeatAt" = now()`.
+      if (/SET\s+"heartbeatAt"\s*=\s*now\(\)/.test(query.sql)) {
+        const ids = new Set(
+          query.values.filter((value) => typeof value === 'string'),
+        );
+        let affected = 0;
+
+        for (const row of state.rows) {
+          if (row.status !== 'PROCESSING') continue;
+          if (!ids.has(row.id)) continue;
+
+          row.heartbeatAt = new Date();
+          affected += 1;
+        }
+
+        return affected;
+      }
+
       state.inFlight += 1;
       state.peakInFlight = Math.max(state.peakInFlight, state.inFlight);
       state.sweepInFlight += 1;
@@ -545,13 +568,26 @@ function fakeSweepPrisma({ rows = [], attempts = [] } = {}) {
       try {
         await yieldTurn();
 
-        const cutoff = query.values.find((value) => value instanceof Date);
+        // The statement binds the interval length twice; PostgreSQL computes
+        // both cutoffs from its own `now()`.
+        const staleMs = query.values.find(
+          (value) => typeof value === 'number',
+        );
+        const cutoff = new Date(Date.now() - staleMs);
+        // `Prisma.join(ids)` binds every in-flight request-log id as a string.
+        const ownedIds = new Set(
+          query.values.filter((value) => typeof value === 'string'),
+        );
         let affected = 0;
 
         // Critical section: no `await` below, so the guard + write is atomic.
         for (const row of state.rows) {
           if (row.status !== 'PROCESSING') continue;
-          if (!(row.startedAt.getTime() < cutoff.getTime())) continue;
+          if (!(row.heartbeatAt.getTime() < cutoff.getTime())) continue;
+
+          // This process still owns the request: never abandon it, even when
+          // it has run past the cutoff and has no attempt row yet.
+          if (ownedIds.has(row.id)) continue;
 
           const liveAttempt = state.attempts.some(
             (attempt) =>
@@ -562,7 +598,7 @@ function fakeSweepPrisma({ rows = [], attempts = [] } = {}) {
 
           row.status = 'FAILED';
           row.errorCode = 'ABANDONED';
-          row.failureClass = 'TIMEOUT';
+          row.failureClass = 'ABANDONED';
           row.finishedAt = new Date();
           row.latencyMs = Math.max(
             0,
@@ -579,6 +615,21 @@ function fakeSweepPrisma({ rows = [], attempts = [] } = {}) {
       }
     },
     requestLog: {
+      create: async (args) => {
+        const row = sweepRow({
+          id: `log-created-${state.rows.length + 1}`,
+          status: 'PROCESSING',
+          startedAt: args.data.startedAt ?? new Date(),
+          ...args.data,
+        });
+
+        // PostgreSQL applies the column default `now()` on insert.
+        row.heartbeatAt = args.data.heartbeatAt ?? new Date();
+
+        state.rows.push(row);
+
+        return args.select?.id ? { id: row.id } : row;
+      },
       updateMany: async (args) => {
         state.updateInFlight += 1;
         if (state.sweepInFlight > 0) state.overlapped = true;
@@ -616,51 +667,46 @@ test('sweepStaleProcessing marks expired PROCESSING rows abandoned', async () =>
   const telemetry = fakeTelemetry();
   const service = new RequestLogService(prisma, telemetry);
 
-  const before = Date.now();
   const affected = await service.sweepStaleProcessing();
-  const after = Date.now();
 
   assert.equal(affected, 1);
   assert.equal(prisma.queries.length, 1);
 
   const [query] = prisma.queries;
 
-  // The shape of the statement: status guard, cutoff, attempt-liveness guard.
+  // The shape of the statement: status guard, database-clock cutoffs,
+  // attempt-liveness guard.
   assert.match(query.sql, /UPDATE "RequestLog" rl/);
   assert.match(query.sql, /SET "status" = 'FAILED'/);
   assert.match(query.sql, /"errorCode" = 'ABANDONED'/);
-  assert.match(query.sql, /"failureClass" = 'TIMEOUT'/);
+  assert.match(query.sql, /"failureClass" = 'ABANDONED'/);
   assert.match(query.sql, /"finishedAt" = now\(\)/);
   assert.match(
     query.sql,
     /GREATEST\(0, \(EXTRACT\(EPOCH FROM \(now\(\) - rl\."startedAt"\)\) \* 1000\)::int\)/,
   );
   assert.match(query.sql, /WHERE rl\."status" = 'PROCESSING'/);
-  assert.match(query.sql, /rl\."startedAt" < \?/);
+  assert.match(query.sql, /rl\."heartbeatAt" < now\(\) - \(\?::int \* interval '1 millisecond'\)/);
   assert.match(
     query.sql,
-    /NOT EXISTS \(\s*SELECT 1 FROM "RequestAttempt" ra\s*WHERE ra\."requestLogId" = rl\."id"\s*AND ra\."createdAt" > \?\s*\)/,
+    /NOT EXISTS \(\s*SELECT 1 FROM "RequestAttempt" ra\s*WHERE ra\."requestLogId" = rl\."id"\s*AND ra\."createdAt" > now\(\) - \(\?::int \* interval '1 millisecond'\)\s*\)/,
   );
 
-  // The cutoff is bound twice (row clock + attempt clock), never interpolated.
+  // The interval length is bound twice (row clock + attempt clock), never
+  // interpolated; no application `Date` is bound at all.
   assert.equal(query.values.length, 2);
-  assert.equal(query.values[0] instanceof Date, true);
-  assert.equal(query.values[0].getTime(), query.values[1].getTime());
-
-  const cutoff = query.values[0].getTime();
-  const expected = 15 * MINUTE;
-
-  assert.ok(
-    cutoff >= before - expected && cutoff <= after - expected,
-    'the bound cutoff must be now - 15 minutes',
+  assert.equal(query.values[0], 15 * MINUTE);
+  assert.equal(query.values[1], 15 * MINUTE);
+  assert.equal(
+    query.values.some((value) => value instanceof Date),
+    false,
   );
-  assert.equal(query.sql.includes(String(cutoff)), false);
 
   const [row] = prisma.state.rows;
 
   assert.equal(row.status, 'FAILED');
   assert.equal(row.errorCode, 'ABANDONED');
-  assert.equal(row.failureClass, 'TIMEOUT');
+  assert.equal(row.failureClass, 'ABANDONED');
   assert.equal(row.latencyMs >= 0, true);
   assert.equal(row.latencyMs >= 19 * MINUTE, true);
   assert.equal(telemetry.errors.length, 0);
@@ -703,7 +749,7 @@ test('sweepStaleProcessing skips a stale row that produced an attempt inside the
 
   assert.equal(dead.status, 'FAILED');
   assert.equal(dead.errorCode, 'ABANDONED');
-  assert.equal(dead.failureClass, 'TIMEOUT');
+  assert.equal(dead.failureClass, 'ABANDONED');
   assert.equal(telemetry.errors.length, 0);
 });
 
@@ -846,6 +892,48 @@ test('a sweep racing finalizeSuccess never overwrites the finalized row', async 
   for (const status of [abandoned.status, succeeded.status]) {
     assert.equal(status === 'SUCCESS' || status === 'ABANDONED' || status === 'FAILED', true);
   }
+});
+
+test('sweepStaleProcessing never abandons a request this process still owns', async () => {
+  const prisma = fakeSweepPrisma({ rows: [] });
+  const telemetry = fakeTelemetry();
+  const service = new RequestLogService(prisma, telemetry);
+
+  // Write-early puts the row in PROCESSING before the provider is called.
+  const started = await service.start(
+    startInput({ startedAt: new Date(Date.now() - 20 * MINUTE) }),
+  );
+
+  assert.notEqual(started, null);
+
+  const row = prisma.state.rows.find((candidate) => candidate.id === started.id);
+
+  // Simulate a request that has outlived the cutoff but is still executing:
+  // no attempt row exists yet, because attempts are written on completion.
+  row.startedAt = new Date(Date.now() - 20 * MINUTE);
+  // Even if this instance missed a heartbeat, local ownership is a fast path.
+  row.heartbeatAt = new Date(Date.now() - 20 * MINUTE);
+
+  assert.equal(await service.sweepStaleProcessing(), 0);
+  assert.equal(row.status, 'PROCESSING');
+
+  // The statement carries the in-process ownership exclusion, bound by id.
+  const sweep = prisma.queries.at(-1);
+
+  assert.match(sweep.sql, /NOT IN/);
+  assert.equal(sweep.values.includes(started.id), true);
+
+  // Finalization releases ownership. A stale row this process no longer owns
+  // is still swept, so the exclusion cannot disable the sweep globally.
+  assert.equal(
+    await service.finalizeSuccess(successInput({ requestLogId: started.id })),
+    true,
+  );
+
+  prisma.state.rows.push(sweepRow({ id: 'log-dead' }));
+
+  assert.equal(await service.sweepStaleProcessing(), 1);
+  assert.equal(telemetry.errors.length, 0);
 });
 
 test('a failed sweep is reported to telemetry and never thrown', async () => {

@@ -120,6 +120,10 @@ model RequestLog {
   isStream         Boolean       @default(false) // caller intent only; Phase 1 never streams
   currency         String? // ISO-4217 of the winning price row
   startedAt        DateTime      @default(now())
+  // Durable liveness: refreshed while the request is executing in any
+  // instance, so another instance's sweep can tell a live request from a
+  // crashed one. The sweep compares it against the database clock.
+  heartbeatAt      DateTime      @default(now())
   finishedAt       DateTime?
   latencyMs        Int           @default(0) // end-to-end
   promptTokens     Int?
@@ -140,6 +144,7 @@ model RequestLog {
   @@index([userId, createdAt])
   @@index([provider, createdAt])
   @@index([status, startedAt])
+  @@index([status, heartbeatAt])
   @@index([failureClass, createdAt])
   @@index([apiKeyId])
   @@index([createdAt])

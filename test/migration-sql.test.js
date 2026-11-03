@@ -23,6 +23,14 @@ const FOUNDATION_SQL = fs.readFileSync(
   ),
   'utf8',
 );
+const HEARTBEAT_SQL = fs.readFileSync(
+  path.join(
+    MIGRATIONS,
+    '20261102120000_requestlog_heartbeat_liveness',
+    'migration.sql',
+  ),
+  'utf8',
+);
 const SCHEMA = fs.readFileSync(path.join(ROOT, 'prisma', 'schema.prisma'), 'utf8');
 
 // Init ran first, so offsets in this text are the real apply order.
@@ -132,11 +140,18 @@ test('V3 covers every schema column exactly once', () => {
 
   // RequestLog predates this migration: its columns are the init ones with the
   // renamed "cost", plus everything added above.
+  // The later liveness migration is additive too: its columns are part of the
+  // applied shape, not of the foundation migration.
+  const heartbeatColumns = [
+    ...HEARTBEAT_SQL.matchAll(/ADD COLUMN\s+"(\w+)"/g),
+  ].map((match) => match[1]);
+
   const requestLogColumns = [
     ...createTableColumns(APPLIED_SQL, 'RequestLog').map((column) =>
       column === 'cost' ? 'totalCost' : column,
     ),
     ...addedColumns,
+    ...heartbeatColumns,
   ];
 
   const sqlColumns = {
@@ -161,6 +176,47 @@ test('V3 covers every schema column exactly once', () => {
       `${model} columns in the migration do not match schema.prisma`,
     );
   }
+});
+
+test('V10d creates the documented number of indexes', () => {
+  // The runbook quotes these numbers (section 4.4, step 6). 12 btree indexes
+  // plus 2 unique constraints = 14 CREATE INDEX statements; with the five
+  // primary keys the three tables end on 20 indexes.
+  const btree = [...FOUNDATION_SQL.matchAll(/^CREATE INDEX /gm)];
+  const unique = [...FOUNDATION_SQL.matchAll(/^CREATE UNIQUE INDEX /gm)];
+
+  assert.equal(btree.length, 12);
+  assert.equal(unique.length, 2);
+  assert.equal(btree.length + unique.length, 14);
+});
+
+test('V5 adds heartbeatAt nullable, backfills it, then tightens and indexes it', () => {
+  const add = /ALTER TABLE "RequestLog"\s+ADD COLUMN "heartbeatAt" TIMESTAMP\(3\)([^;]*);/.exec(
+    HEARTBEAT_SQL,
+  );
+
+  assert.ok(add !== null, 'heartbeatAt is not added to RequestLog');
+  // Existing PROCESSING rows need the backfill before NOT NULL can apply.
+  assert.doesNotMatch(add[1], /NOT NULL/);
+  assert.doesNotMatch(add[1], /DEFAULT/);
+
+  const backfill = HEARTBEAT_SQL.indexOf('"heartbeatAt" = "startedAt"');
+
+  assert.ok(backfill > add.index, 'heartbeatAt is not backfilled from startedAt');
+
+  const tighten = HEARTBEAT_SQL.indexOf(
+    'ALTER COLUMN "heartbeatAt" SET NOT NULL',
+  );
+
+  assert.ok(tighten > backfill, 'heartbeatAt is tightened before its backfill');
+
+  assert.match(
+    HEARTBEAT_SQL,
+    /CREATE INDEX "RequestLog_status_heartbeatAt_idx" ON "RequestLog"\("status", "heartbeatAt"\)/,
+  );
+
+  // The already-rehearsed foundation migration stays untouched.
+  assert.doesNotMatch(FOUNDATION_SQL, /heartbeatAt/);
 });
 
 test('V4 backfills before setting NOT NULL', () => {

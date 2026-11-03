@@ -31,10 +31,32 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
   static readonly STALE_PROCESSING_MS = 15 * 60 * 1000;
   static readonly SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
+  /**
+   * How often this instance refreshes `heartbeatAt` for the requests it owns.
+   *
+   * Several beats must fit inside the stale cutoff so a single slow write (or
+   * one missed timer tick) never makes a live request look abandoned.
+   */
+  static readonly HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
   private readonly logger = new Logger(RequestLogService.name);
 
   /** Handle kept so a test (or shutdown) can stop the sweep (§6.7). */
   private sweepTimer?: ReturnType<typeof setInterval>;
+
+  /** Handle for the durable-heartbeat timer. */
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+
+  /**
+   * Request-log ids this process started and has not finalized.
+   *
+   * This is an in-memory registry for batching heartbeats, plus a fast-path
+   * exclusion for this process's own sweep. It is *not* the distributed
+   * correctness boundary: another instance cannot see it. Cross-instance
+   * liveness comes from `RequestLog.heartbeatAt`, which is shared through
+   * PostgreSQL and compared against the database clock.
+   */
+  private readonly inFlightRequestLogIds = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -42,11 +64,12 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   /**
-   * Fire-and-forget sweep on boot, then every 5 minutes (§6.7).
+   * Fire-and-forget sweep on boot, then every 5 minutes (§6.7); durable
+   * heartbeats every 30 seconds.
    *
-   * `void` because the sweep is total: it reports its own failure to telemetry
-   * and resolves, so nothing can reject here. `unref()` keeps the timer from
-   * holding the process alive.
+   * `void` because both operations are total: they report their own failure to
+   * telemetry and resolve, so nothing can reject here. `unref()` keeps the
+   * timers from holding the process alive.
    */
   onModuleInit(): void {
     // `catch` is belt and braces on top of the service's own totality: no
@@ -58,6 +81,14 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
     }, RequestLogService.SWEEP_INTERVAL_MS);
 
     this.sweepTimer.unref();
+
+    // Keeps this instance's in-flight rows alive for every other instance's
+    // sweep. `unref()` for the same reason as the sweep timer.
+    this.heartbeatTimer = setInterval(() => {
+      void this.heartbeatInFlight().catch(() => {});
+    }, RequestLogService.HEARTBEAT_INTERVAL_MS);
+
+    this.heartbeatTimer.unref();
   }
 
   onModuleDestroy(): void {
@@ -65,17 +96,33 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
       clearInterval(this.sweepTimer);
       this.sweepTimer = undefined;
     }
+
+    if (this.heartbeatTimer !== undefined) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 
   /**
-   * Marks PROCESSING rows older than `olderThanMs` as `FAILED`/`ABANDONED`.
+   * Marks PROCESSING rows whose durable heartbeat expired as `FAILED`/`ABANDONED`.
    *
    * Raw SQL, not `updateMany`: `latencyMs = now() - startedAt` references
    * another column, which Prisma's `data` cannot express (§6.7).
    *
-   * The `NOT EXISTS` guard is load-bearing (S3): a row that produced an attempt
-   * inside the window is provably still executing and must never be abandoned.
-   * Only `PROCESSING` rows are touched, so a finalized row is never rewritten.
+   * The cutoff is computed by PostgreSQL (`now()`), never by the application
+   * clock: instances can have skewed clocks, and the timestamp they are
+   * comparing was written by whichever instance owns the request. The bound
+   * value is only the interval length.
+   *
+   * `heartbeatAt` is the distributed liveness proof: every instance refreshes
+   * it for the requests it owns, so a live request on another instance is never
+   * abandoned. A crashed instance stops refreshing it and becomes eligible
+   * after the cutoff. The `NOT EXISTS` guard is extra evidence of progress
+   * between heartbeats. Only `PROCESSING` rows are touched, so a finalized row
+   * is never rewritten.
+   *
+   * The local ownership guard is a fast path for this process only; it is not
+   * what protects requests owned by another instance.
    *
    * Returns the affected row count; never throws.
    */
@@ -83,29 +130,64 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
     olderThanMs: number = RequestLogService.STALE_PROCESSING_MS,
   ): Promise<number> {
     try {
-      const cutoff = new Date(Date.now() - olderThanMs);
+      const staleMs = Math.max(0, Math.trunc(olderThanMs));
+      const ownedIds = [...this.inFlightRequestLogIds];
+      const ownershipGuard =
+        ownedIds.length === 0
+          ? Prisma.empty
+          : Prisma.sql`AND rl."id" NOT IN (${Prisma.join(ownedIds)})`;
 
-      // `Prisma.sql` with `${cutoff}` is a bound parameter - never interpolated.
+      // Every time cutoff is `now()` in the database. Only the interval is
+      // bound, so no application `Date` can leak into the comparison.
       const affected = await this.prisma.$executeRaw(Prisma.sql`
         UPDATE "RequestLog" rl
            SET "status" = 'FAILED',
                "errorCode" = 'ABANDONED',
-               "failureClass" = 'TIMEOUT',
+               "failureClass" = 'ABANDONED',
                "finishedAt" = now(),
                "latencyMs" = GREATEST(0, (EXTRACT(EPOCH FROM (now() - rl."startedAt")) * 1000)::int)
          WHERE rl."status" = 'PROCESSING'
-           AND rl."startedAt" < ${cutoff}
+           AND rl."heartbeatAt" < now() - (${staleMs}::int * interval '1 millisecond')
            AND NOT EXISTS (
              SELECT 1 FROM "RequestAttempt" ra
               WHERE ra."requestLogId" = rl."id"
-                AND ra."createdAt" > ${cutoff}
+                AND ra."createdAt" > now() - (${staleMs}::int * interval '1 millisecond')
            )
+           ${ownershipGuard}
       `);
 
       return affected;
     } catch (error) {
       // No response exists for a sweep: `0` is the documented "none" (§6.8).
       this.reportFailure('sweep', 0, error);
+      return 0;
+    }
+  }
+
+  /**
+   * Refreshes `heartbeatAt` for every request this instance still owns.
+   *
+   * One statement for the whole batch, on the database clock, guarded by
+   * `status = 'PROCESSING'`: a row another instance already abandoned is never
+   * resurrected. TOTAL like every other write: a failure is reported to
+   * telemetry and returns `0`.
+   */
+  async heartbeatInFlight(): Promise<number> {
+    const ids = [...this.inFlightRequestLogIds];
+
+    if (ids.length === 0) {
+      return 0;
+    }
+
+    try {
+      return await this.prisma.$executeRaw(Prisma.sql`
+        UPDATE "RequestLog"
+           SET "heartbeatAt" = now()
+         WHERE "status" = 'PROCESSING'
+           AND "id" IN (${Prisma.join(ids)})
+      `);
+    } catch (error) {
+      this.reportFailure('heartbeat', 0, error);
       return 0;
     }
   }
@@ -128,6 +210,8 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
         },
         select: { id: true },
       });
+
+      this.inFlightRequestLogIds.add(created.id);
 
       return { id: created.id };
     } catch (error) {
@@ -231,6 +315,10 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
         error,
       );
       return false;
+    } finally {
+      // The handler is done whether the guarded write won or lost: release
+      // ownership so a later sweep can reclaim the row if it is still open.
+      this.inFlightRequestLogIds.delete(input.requestLogId);
     }
   }
 
@@ -264,6 +352,8 @@ export class RequestLogService implements OnModuleInit, OnModuleDestroy {
         error,
       );
       return false;
+    } finally {
+      this.inFlightRequestLogIds.delete(input.requestLogId);
     }
   }
 
