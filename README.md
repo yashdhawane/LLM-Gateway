@@ -28,22 +28,33 @@ password: admin123
 
 ## Database connection (Neon)
 
-The runtime uses Neon's pooled connection string. The pooler parameters are not optional:
+Single long-running instance: use the **direct** endpoint. It keeps prepared statements (one round trip per query) and a 0.25 CU free-tier compute still allows 104 direct connections, of which 97 are usable.
 
 | Parameter | Value | Why |
 | --- | --- | --- |
-| host | `...-pooler...` | application runtime |
+| host | `...` (no `-pooler`) | one long-lived process, not connection-per-request |
 | `sslmode` | `require` | encrypted transport |
-| `pgbouncer` | `true` | required: disables named prepared statements, which Neon's transaction-mode pooler does not safely support |
-| `connection_limit` | `1` | recommended for a single small instance |
+| `connection_limit` | `2` | heartbeat, sweep and one request pipeline; well under the direct cap |
 
 ```text
-postgresql://user:password@host-pooler.region.aws.neon.tech/db?sslmode=require&pgbouncer=true&connection_limit=1
+postgresql://user:password@host.region.aws.neon.tech/db?sslmode=require&connection_limit=2
 ```
 
-Without `pgbouncer=true`, a multi-column `RequestLog` finalization can fail with `ConnectorError(QueryError(UnexpectedMessage))`. The gateway still returns the provider response, but the row stays `PROCESSING` and is later marked `ABANDONED` even though the request succeeded. `statement_cache_size=0` is an equivalent alternative. Both were verified against a disposable Neon branch.
+The pooled host (`...-pooler...`) is for serverless or many-instance deployments. Behind it, `pgbouncer=true` (or `statement_cache_size=0`) is mandatory: without it, a multi-column `RequestLog` finalization can fail with `ConnectorError(QueryError(UnexpectedMessage))`. The gateway still returns the provider response, but the row stays `PROCESSING` and is later marked `ABANDONED` even though the request succeeded. Both were verified against a disposable Neon branch.
 
-Prisma Migrate cannot run through the pooler because it needs a single session. Point `DATABASE_URL` at the direct (unpooled) host for migration commands: the same string without `-pooler` and without `pgbouncer=true`.
+That flag is not free. It disables Prisma's prepared-statement cache, so each query costs about five round trips instead of one. Measured from India against `us-east-2` (~210 ms RTT): `SELECT 1` took ~1060 ms with `pgbouncer=true` and ~212 ms on the direct host — roughly 5 s of database overhead per chat request. Use the pooler only when connection count actually demands it.
+
+Prisma Migrate cannot run through the pooler because it needs a single session. Point `DATABASE_URL` at the direct host for migration commands.
+
+### Free-tier budget
+
+Neon Free gives 100 CU-hours per project per month, and scale-to-zero suspends a compute after five minutes of inactivity. At the 0.25 CU minimum that is ~400 always-on hours, about 16 days — an always-awake compute runs out before the month ends and then stays suspended until the next cycle.
+
+Two application behaviours matter:
+
+- The stale sweep runs every 20 minutes, not five, so the compute can actually reach its idle threshold and suspend (see `RequestLogService.SWEEP_INTERVAL_MS`).
+- Heartbeats write nothing when no request is in flight, so an idle gateway does not keep the database awake.
+- Poll `/health` no more often than every 10-15 minutes; a 30-second monitor would hold the compute awake around the clock.
 
 ## Health probe
 
@@ -75,7 +86,7 @@ npm ci
 npm run build                                  # prebuild runs prisma generate
 DATABASE_URL="<direct-unpooled-url>" npx prisma migrate deploy
 npm run db:seed                                # idempotent
-npm run start:prod                             # with the pooled URL
+npm run start:prod                             # direct URL in .env
 ```
 
 Post-deploy checks:

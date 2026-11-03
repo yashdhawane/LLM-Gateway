@@ -29,7 +29,17 @@ import type {
 @Injectable()
 export class RequestLogService implements OnModuleInit, OnModuleDestroy {
   static readonly STALE_PROCESSING_MS = 15 * 60 * 1000;
-  static readonly SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+  /**
+   * How often the abandoned-row sweep runs.
+   *
+   * Deliberately longer than Neon's five-minute scale-to-zero window: a sweep
+   * exactly every five minutes keeps a free-tier compute awake around the
+   * clock, which burns the monthly CU-hour allowance and suspends the database
+   * mid-month. Twenty minutes lets the compute sleep between sweeps; the cost
+   * is that an abandoned row is reclaimed within twenty-five minutes instead of
+   * twenty.
+   */
+  static readonly SWEEP_INTERVAL_MS = 20 * 60 * 1000;
 
   /**
    * How often this instance refreshes `heartbeatAt` for the requests it owns.
