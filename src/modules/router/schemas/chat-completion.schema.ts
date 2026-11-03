@@ -16,6 +16,11 @@ export const ChatCompletionRequestSchema = z.object({
   top_p: z.number().min(0).max(1).optional(),
   n: z.number().int().min(1).max(128).optional(),
   stream: z.boolean().optional(),
+  stream_options: z
+    .object({
+      include_usage: z.boolean().optional(),
+    })
+    .optional(),
   stop: z
     .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(4)])
     .optional(),
@@ -50,6 +55,7 @@ const SUPPORTED_FIELDS = new Set([
   'top_p',
   'n',
   'stream',
+  'stream_options',
   'stop',
   'max_tokens',
   'max_completion_tokens',
@@ -70,7 +76,6 @@ const UNSUPPORTED_FIELDS = [
   'functions',
   'function_call',
   'response_format',
-  'stream_options',
   'logprobs',
   'top_logprobs',
   'modalities',
@@ -126,9 +131,25 @@ export function validateChatCompletionRequest(
   }
 
   if (input.stream === true) {
-    throw unsupported(
-      'stream',
-      'Streaming is not supported yet. Set stream to false or omit it.',
+    if (isRecord(input.stream_options)) {
+      const unknownOption = Object.keys(input.stream_options).find(
+        (option) => option !== 'include_usage',
+      );
+
+      if (unknownOption) {
+        throw unsupported(
+          `stream_options.${unknownOption}`,
+          `Unsupported stream option '${unknownOption}'.`,
+        );
+      }
+    }
+  } else if (Object.prototype.hasOwnProperty.call(input, 'stream_options')) {
+    // OpenAI also refuses this: stream options describe a stream, so silently
+    // ignoring them would hide a client bug.
+    throw new ChatRequestValidationError(
+      "The 'stream_options' field requires 'stream' to be true.",
+      'VALIDATION_ERROR',
+      'stream_options',
     );
   }
 

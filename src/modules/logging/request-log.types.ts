@@ -92,6 +92,12 @@ export interface ClassifiedAttemptError {
   providerStatus?: number | null;
 }
 
+/** Facts only the streaming path knows when it maps an observation. */
+export interface AttemptMappingOptions {
+  isStream?: boolean;
+  timeToFirstTokenMs?: number | null;
+}
+
 /**
  * The only path from an observation to an attempt row (§5.7).
  *
@@ -102,6 +108,7 @@ export interface ClassifiedAttemptError {
 export function toAttemptRecord(
   observation: AttemptObservation<AttemptObservationResult>,
   classify: (error: unknown) => ClassifiedAttemptError,
+  options?: AttemptMappingOptions,
 ): AttemptRecordDraft {
   const succeeded = observation.status === 'SUCCEEDED';
   const result = succeeded ? observation.result : undefined;
@@ -125,8 +132,8 @@ export function toAttemptRecord(
       : null,
     credentialId: null,
     status: observation.status,
-    // Caller intent lives on the parent row; Phase 1 never streams.
-    isStream: false,
+    // Caller intent lives on the parent row; only the stream path sets this.
+    isStream: options?.isStream === true,
     providerStatus: failure?.providerStatus ?? null,
     failureClass: failure?.failureClass ?? null,
     errorCode: failure?.wireCode ?? null,
@@ -135,7 +142,7 @@ export function toAttemptRecord(
     latencyMs: observation.latencyMs,
     upstreamLatencyMs: split.upstreamLatencyMs,
     overheadMs: split.overheadMs,
-    timeToFirstTokenMs: null,
+    timeToFirstTokenMs: options?.timeToFirstTokenMs ?? null,
     promptTokens: toTokenCount(usage?.prompt_tokens),
     completionTokens: toTokenCount(usage?.completion_tokens),
     totalTokens: toTokenCount(usage?.total_tokens),

@@ -38,10 +38,47 @@ test('accepts a supported non-streaming text request', () => {
   assert.equal(request.timeout, 5000);
 });
 
-test('rejects streaming explicitly', () => {
+test('accepts a streaming request and its usage opt-in', () => {
+  const request = validateChatCompletionRequest({
+    ...baseRequest,
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+
+  assert.equal(request.stream, true);
+  assert.deepEqual(request.stream_options, { include_usage: true });
+});
+
+test('rejects stream_options without stream enabled', () => {
   assert.throws(
-    () => validateChatCompletionRequest({ ...baseRequest, stream: true }),
-    expects('UNSUPPORTED_FEATURE', 'stream'),
+    () =>
+      validateChatCompletionRequest({
+        ...baseRequest,
+        stream_options: { include_usage: true },
+      }),
+    expects('VALIDATION_ERROR', 'stream_options'),
+  );
+
+  assert.throws(
+    () =>
+      validateChatCompletionRequest({
+        ...baseRequest,
+        stream: false,
+        stream_options: { include_usage: true },
+      }),
+    expects('VALIDATION_ERROR', 'stream_options'),
+  );
+});
+
+test('rejects an unknown stream option instead of silently dropping it', () => {
+  assert.throws(
+    () =>
+      validateChatCompletionRequest({
+        ...baseRequest,
+        stream: true,
+        stream_options: { include_usage: true, include_logprobs: true },
+      }),
+    expects('UNSUPPORTED_FEATURE', 'stream_options.include_logprobs'),
   );
 });
 

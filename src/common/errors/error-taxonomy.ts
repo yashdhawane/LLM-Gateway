@@ -17,6 +17,21 @@ export type FailureClass =
   | 'ABANDONED';
 
 /**
+ * The coarse family a client sees on `error.type`.
+ *
+ * Derived from the HTTP status, so a JSON error response and a mid-stream error
+ * event describe the same failure the same way.
+ */
+export type ErrorType =
+  | 'invalid_request_error'
+  | 'authentication_error'
+  | 'permission_error'
+  | 'not_found_error'
+  | 'conflict_error'
+  | 'rate_limit_error'
+  | 'server_error';
+
+/**
  * Every code the gateway itself can classify. Provider codes are included
  * verbatim so their wire representation never changes.
  */
@@ -31,7 +46,14 @@ export type GatewayErrorCode =
   | 'API_KEY_INACTIVE'
   | 'RATE_LIMIT_ERROR'
   | 'NOT_FOUND'
-  | 'INTERNAL_ERROR';
+  | 'INTERNAL_ERROR'
+  /**
+   * Stream-only outcomes. They are never sent as a JSON error body: a stream
+   * that already committed 200 reports them inside an SSE error frame, and
+   * `CLIENT_DISCONNECTED` exists only on the request-log row.
+   */
+  | 'STREAM_INTERRUPTED'
+  | 'CLIENT_DISCONNECTED';
 
 export interface ErrorDefinition {
   readonly failureClass: FailureClass;
@@ -147,6 +169,20 @@ export const ERROR_DEFINITIONS: Readonly<
     wireCode: 'INTERNAL_ERROR',
     message: 'Internal server error',
   },
+  STREAM_INTERRUPTED: {
+    failureClass: 'PROVIDER_ERROR',
+    httpStatus: 502,
+    wireCode: 'STREAM_INTERRUPTED',
+    message: 'The provider stream ended before the completion finished.',
+  },
+  CLIENT_DISCONNECTED: {
+    // 499 is nginx's code for "client closed the request"; the client is gone,
+    // so the number is only ever read from the request-log row.
+    failureClass: 'ABANDONED',
+    httpStatus: 499,
+    wireCode: 'CLIENT_DISCONNECTED',
+    message: 'The client disconnected before the response finished.',
+  },
 });
 
 /** Fallback messages for filter-default wire codes outside the taxonomy. */
@@ -156,6 +192,22 @@ const EXTRA_WIRE_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 
 export function describeErrorCode(code: GatewayErrorCode): ErrorDefinition {
   return ERROR_DEFINITIONS[code];
+}
+
+/**
+ * The `error.type` family for an HTTP status.
+ *
+ * Shared by the JSON exception filter and the SSE error frame so a failure
+ * after the response is committed is described exactly like one before it.
+ */
+export function errorTypeForStatus(status: number): ErrorType {
+  if (status === 401) return 'authentication_error';
+  if (status === 403) return 'permission_error';
+  if (status === 404) return 'not_found_error';
+  if (status === 409) return 'conflict_error';
+  if (status === 429) return 'rate_limit_error';
+  if (status >= 500) return 'server_error';
+  return 'invalid_request_error';
 }
 
 export function isGatewayErrorCode(value: string): value is GatewayErrorCode {

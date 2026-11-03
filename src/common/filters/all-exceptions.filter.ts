@@ -7,6 +7,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
+import {
+  errorTypeForStatus,
+  type ErrorType,
+} from '../errors/error-taxonomy';
 
 export enum ErrorCode {
   VALIDATION_ERROR = 'VALIDATION_ERROR',
@@ -28,15 +32,6 @@ export enum ErrorCode {
   API_KEY_INACTIVE = 'API_KEY_INACTIVE',
 }
 
-export type ErrorType =
-  | 'invalid_request_error'
-  | 'authentication_error'
-  | 'permission_error'
-  | 'not_found_error'
-  | 'conflict_error'
-  | 'rate_limit_error'
-  | 'server_error';
-
 export interface ErrorResponse {
   error: {
     message: string;
@@ -47,16 +42,6 @@ export interface ErrorResponse {
     status_code: number;
     timestamp: string;
   };
-}
-
-function errorTypeForStatus(status: number): ErrorType {
-  if (status === HttpStatus.UNAUTHORIZED) return 'authentication_error';
-  if (status === HttpStatus.FORBIDDEN) return 'permission_error';
-  if (status === HttpStatus.NOT_FOUND) return 'not_found_error';
-  if (status === HttpStatus.CONFLICT) return 'conflict_error';
-  if (status === HttpStatus.TOO_MANY_REQUESTS) return 'rate_limit_error';
-  if (status >= HttpStatus.INTERNAL_SERVER_ERROR) return 'server_error';
-  return 'invalid_request_error';
 }
 
 function defaultCodeForStatus(status: number): string {

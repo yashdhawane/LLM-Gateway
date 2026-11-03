@@ -258,7 +258,7 @@
     },
     "/api/v1/chat/completions": {
       "post": {
-        "description": "OpenAI-compatible, non-streaming text chat. Unsupported features are rejected with a structured UNSUPPORTED_FEATURE error.",
+        "description": "OpenAI-compatible text chat. Set `stream: true` to receive `text/event-stream` chunks terminated by `data: [DONE]`; omit it for a single JSON response. Unsupported features are rejected with a structured UNSUPPORTED_FEATURE error.",
         "operationId": "GatewayController_createCompletion",
         "parameters": [
           {
@@ -283,9 +283,14 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "One JSON completion, or an SSE stream when `stream` is true.",
             "content": {
               "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponseDto"
+                }
+              },
+              "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/ChatCompletionResponseDto"
                 }
@@ -299,6 +304,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
               }
             }
           },
@@ -306,6 +316,11 @@
             "description": "Missing or invalid API key",
             "content": {
               "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              },
+              "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
@@ -319,6 +334,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
               }
             }
           },
@@ -326,6 +346,11 @@
             "description": "Provider rate limit exceeded",
             "content": {
               "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              },
+              "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
@@ -339,6 +364,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
               }
             }
           },
@@ -349,6 +379,11 @@
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
               }
             }
           },
@@ -356,6 +391,11 @@
             "description": "Provider request timed out",
             "content": {
               "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponseDto"
+                }
+              },
+              "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResponseDto"
                 }
@@ -478,7 +518,7 @@
   },
   "info": {
     "title": "LLM Gateway API",
-    "description": "OpenAI-compatible, non-streaming text chat gateway. Unsupported request features return a structured UNSUPPORTED_FEATURE error.",
+    "description": "OpenAI-compatible text chat gateway. `/chat/completions` answers one JSON object, or a `text/event-stream` when `stream: true`. Unsupported request features return a structured UNSUPPORTED_FEATURE error.",
     "version": "1.0.0",
     "contact": {}
   },
@@ -638,6 +678,16 @@
           "content"
         ]
       },
+      "StreamOptionsDto": {
+        "type": "object",
+        "properties": {
+          "include_usage": {
+            "type": "boolean",
+            "example": true,
+            "description": "Emit one extra chunk carrying usage before the stream ends. Without it no usage is sent, but the gateway still records the tokens it received."
+          }
+        }
+      },
       "ChatCompletionRequestDto": {
         "type": "object",
         "properties": {
@@ -671,7 +721,15 @@
           "stream": {
             "type": "boolean",
             "example": false,
-            "description": "Streaming is not supported yet. Set false or omit; true returns UNSUPPORTED_FEATURE."
+            "description": "When true the response is text/event-stream: OpenAI-compatible chat.completion.chunk objects, terminated by data: [DONE]."
+          },
+          "stream_options": {
+            "description": "Only valid with stream: true. include_usage appends one final chunk with choices: [] and the token usage.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StreamOptionsDto"
+              }
+            ]
           },
           "stop": {
             "oneOf": [

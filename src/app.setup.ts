@@ -85,7 +85,7 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
   const config = new DocumentBuilder()
     .setTitle('LLM Gateway API')
     .setDescription(
-      'OpenAI-compatible, non-streaming text chat gateway. Unsupported request features return a structured UNSUPPORTED_FEATURE error.',
+      'OpenAI-compatible text chat gateway. `/chat/completions` answers one JSON object, or a `text/event-stream` when `stream: true`. Unsupported request features return a structured UNSUPPORTED_FEATURE error.',
     )
     .setVersion('1.0.0')
     .addBearerAuth(

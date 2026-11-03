@@ -148,6 +148,7 @@ test('does not translate unexpected routing failures into model-not-found', asyn
         { id: 'user-1', apiKeyId: 'key-1' },
         'trace-1',
         'request-1',
+        { send: () => {} },
       ),
     (error) => error === databaseError,
   );

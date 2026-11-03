@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   HttpException,
+  Res,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -15,7 +16,9 @@ import {
   ApiBody,
   ApiHeader,
   ApiOkResponse,
+  ApiProduces,
 } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
 import { ApiKeyGuard } from '../auth/api-key.guard';
 import { ProviderError } from '../providers/base.provider';
 import {
@@ -34,6 +37,7 @@ import {
   type RequestContext,
 } from '../../common/context/request-context';
 import { AuthenticatedUser } from '../auth/auth.service';
+import { createFastifyStreamSink } from '../../common/sse/fastify-stream-sink';
 import { GatewayService } from './gateway.service';
 import {
   ChatCompletionRequestDto,
@@ -52,8 +56,9 @@ export class GatewayController {
   @ApiOperation({
     summary: 'Create a chat completion',
     description:
-      'OpenAI-compatible, non-streaming text chat. Unsupported features are rejected with a structured UNSUPPORTED_FEATURE error.',
+      'OpenAI-compatible text chat. Set `stream: true` to receive `text/event-stream` chunks terminated by `data: [DONE]`; omit it for a single JSON response. Unsupported features are rejected with a structured UNSUPPORTED_FEATURE error.',
   })
+  @ApiProduces('application/json', 'text/event-stream')
   @ApiHeader({
     name: 'x-request-id',
     required: false,
@@ -61,7 +66,11 @@ export class GatewayController {
       'Optional client request ID. Falls back to the gateway trace ID when omitted.',
   })
   @ApiBody({ type: ChatCompletionRequestDto })
-  @ApiOkResponse({ type: ChatCompletionResponseDto })
+  @ApiOkResponse({
+    description:
+      'One JSON completion, or an SSE stream when `stream` is true.',
+    type: ChatCompletionResponseDto,
+  })
   @ApiResponse({
     status: 400,
     type: ApiErrorResponseDto,
@@ -102,6 +111,7 @@ export class GatewayController {
     @CurrentUser() user: AuthenticatedUser,
     @TraceId() traceId: string,
     @RequestId() requestId: string,
+    @Res() reply: FastifyReply,
   ) {
     // The controller owns context construction; the gateway receives an
     // immutable `RequestContext` and never sees the raw body (§6.1).
@@ -118,8 +128,27 @@ export class GatewayController {
 
     const request = await this.validateRequest(body, context);
 
+    if (context.isStream) {
+      const sink = createFastifyStreamSink(reply, traceId);
+
+      try {
+        await this.gatewayService.streamCompletion(request, context, sink);
+      } catch (error) {
+        // Only a failure before the first byte reaches this point: the sink has
+        // not committed anything, so a normal JSON error is still possible.
+        if (error instanceof ProviderError) {
+          throw this.mapProviderError(error);
+        }
+        throw error;
+      }
+
+      // A committed stream is already written by the sink; returning here keeps
+      // Nest from attempting a second response.
+      return;
+    }
+
     try {
-      return await this.gatewayService.createCompletion(request, context);
+      reply.send(await this.gatewayService.createCompletion(request, context));
     } catch (error) {
       if (error instanceof ProviderError) {
         throw this.mapProviderError(error);

@@ -1,7 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-export class ChatMessageDto {
-  @ApiProperty({
+export class StreamOptionsDto {
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Emit one extra chunk carrying usage before the stream ends. Without it no usage is sent, but the gateway still records the tokens it received.',
+  })
+  include_usage?: boolean;
+}
+
+export class ChatMessageDto {  @ApiProperty({
     enum: ['system', 'user', 'assistant', 'developer'],
     example: 'user',
   })
@@ -36,9 +44,16 @@ export class ChatCompletionRequestDto {
   @ApiPropertyOptional({
     example: false,
     description:
-      'Streaming is not supported yet. Set false or omit; true returns UNSUPPORTED_FEATURE.',
+      'When true the response is text/event-stream: OpenAI-compatible chat.completion.chunk objects, terminated by data: [DONE].',
   })
   stream?: boolean;
+
+  @ApiPropertyOptional({
+    type: () => StreamOptionsDto,
+    description:
+      "Only valid with stream: true. include_usage appends one final chunk with choices: [] and the token usage.",
+  })
+  stream_options?: StreamOptionsDto;
 
   @ApiPropertyOptional({
     oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],

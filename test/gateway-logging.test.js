@@ -609,7 +609,7 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
       gateway.service.recordRejectedRequest(context, input),
   });
 
-  const body = request({ stream: true });
+  const body = request({ n: 2 });
   let rejected;
 
   await assert.rejects(
@@ -619,6 +619,7 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
         { id: 'user-1', apiKeyId: 'key-1' },
         'trace-1',
         'request-1',
+        { send: () => {} },
       ),
     (error) => {
       rejected = error;
@@ -632,9 +633,9 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
       assert.equal(response.code, 'UNSUPPORTED_FEATURE');
       assert.equal(
         response.message,
-        'Streaming is not supported yet. Set stream to false or omit it.',
+        'Only one completion per request is supported.',
       );
-      assert.equal(response.param, 'stream');
+      assert.equal(response.param, 'n');
       assert.equal(response.statusCode, 400);
 
       return true;
@@ -650,7 +651,7 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
   assert.equal(requestLogs.started[0].traceId, 'trace-1');
   assert.equal(requestLogs.started[0].requestId, 'request-1');
   assert.equal(requestLogs.started[0].requestedModel, 'public-model');
-  assert.equal(requestLogs.started[0].isStream, true);
+  assert.equal(requestLogs.started[0].isStream, false);
 
   assert.equal(requestLogs.attempts.length, 0);
   assert.equal(requestLogs.successes.length, 0);
@@ -684,6 +685,7 @@ test('records a FAILED caller-fault row for a rejected request with no attempts'
         { id: 'user-1', apiKeyId: 'key-1' },
         'trace-2',
         'request-2',
+        { send: () => {} },
       ),
     (error) => {
       assert.ok(error instanceof HttpException);
