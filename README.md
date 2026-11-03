@@ -26,6 +26,109 @@ email:    dev@local.test
 password: admin123
 ```
 
+## Database connection (Neon)
+
+The runtime uses Neon's pooled connection string. The pooler parameters are not optional:
+
+| Parameter | Value | Why |
+| --- | --- | --- |
+| host | `...-pooler...` | application runtime |
+| `sslmode` | `require` | encrypted transport |
+| `pgbouncer` | `true` | required: disables named prepared statements, which Neon's transaction-mode pooler does not safely support |
+| `connection_limit` | `1` | recommended for a single small instance |
+
+```text
+postgresql://user:password@host-pooler.region.aws.neon.tech/db?sslmode=require&pgbouncer=true&connection_limit=1
+```
+
+Without `pgbouncer=true`, a multi-column `RequestLog` finalization can fail with `ConnectorError(QueryError(UnexpectedMessage))`. The gateway still returns the provider response, but the row stays `PROCESSING` and is later marked `ABANDONED` even though the request succeeded. `statement_cache_size=0` is an equivalent alternative. Both were verified against a disposable Neon branch.
+
+Prisma Migrate cannot run through the pooler because it needs a single session. Point `DATABASE_URL` at the direct (unpooled) host for migration commands: the same string without `-pooler` and without `pgbouncer=true`.
+
+## Deployment
+
+Both RequestLog migrations are additive. The foundation migration backfills every existing row to `SUCCESS`/`FAILED` from `errorCode`, so no legacy row becomes `PROCESSING`; the heartbeat migration backfills `heartbeatAt` from `startedAt`. The migration must not overlap application writes, so drain traffic first.
+
+```bash
+# 1. Drain traffic: stop or scale the application to zero.
+# 2. Pre-flight (read-only), expect 0:
+#    select count(*) from "RequestLog" where "createdAt" > now() - interval '15 minutes';
+
+npm ci
+npm run build                                  # prebuild runs prisma generate
+DATABASE_URL="<direct-unpooled-url>" npx prisma migrate deploy
+npm run db:seed                                # idempotent
+npm run start:prod                             # with the pooled URL
+```
+
+Post-deploy checks:
+
+```sql
+-- expect 0
+select count(*) from "RequestLog"
+ where "status" = 'PROCESSING' and "heartbeatAt" < now() - interval '15 minutes';
+```
+
+Also confirm the log contains no `REQUEST_LOG_WRITE_FAILED`, and that `_prisma_migrations` lists both `20261102…` migrations as finished.
+
+### Rollback
+
+Prisma generates no down migrations, so rollback uses the documented inverse SQL. Undo in reverse order and restore the previous application build, which expects the original `cost` column and no new columns.
+
+Heartbeat migration first:
+
+```sql
+BEGIN;
+DROP INDEX IF EXISTS "RequestLog_status_heartbeatAt_idx";
+ALTER TABLE "RequestLog" DROP COLUMN IF EXISTS "heartbeatAt";
+DELETE FROM "_prisma_migrations"
+ WHERE migration_name = '20261102120000_requestlog_heartbeat_liveness';
+COMMIT;
+```
+
+Then the foundation migration:
+
+```sql
+BEGIN;
+ALTER TABLE "RequestLog" DROP CONSTRAINT IF EXISTS "RequestLog_pricingId_fkey";
+ALTER TABLE "RequestAttempt" DROP CONSTRAINT IF EXISTS "RequestAttempt_requestLogId_fkey";
+ALTER TABLE "RequestAttempt" DROP CONSTRAINT IF EXISTS "RequestAttempt_pricingId_fkey";
+ALTER TABLE "ModelPricing" DROP CONSTRAINT IF EXISTS "ModelPricing_userId_fkey";
+DROP TABLE IF EXISTS "RequestAttempt";
+DROP TABLE IF EXISTS "ModelPricing";
+DROP INDEX IF EXISTS "RequestLog_userId_createdAt_idx";
+DROP INDEX IF EXISTS "RequestLog_provider_createdAt_idx";
+DROP INDEX IF EXISTS "RequestLog_status_startedAt_idx";
+DROP INDEX IF EXISTS "RequestLog_failureClass_createdAt_idx";
+DROP INDEX IF EXISTS "RequestLog_pricingId_idx";
+CREATE INDEX "RequestLog_userId_idx" ON "RequestLog"("userId");
+ALTER TABLE "RequestLog"
+  DROP COLUMN IF EXISTS "requestedModel",
+  DROP COLUMN IF EXISTS "servedModel",
+  DROP COLUMN IF EXISTS "status",
+  DROP COLUMN IF EXISTS "failureClass",
+  DROP COLUMN IF EXISTS "attemptCount",
+  DROP COLUMN IF EXISTS "fallbackUsed",
+  DROP COLUMN IF EXISTS "credentialId",
+  DROP COLUMN IF EXISTS "isStream",
+  DROP COLUMN IF EXISTS "currency",
+  DROP COLUMN IF EXISTS "startedAt",
+  DROP COLUMN IF EXISTS "heartbeatAt",
+  DROP COLUMN IF EXISTS "finishedAt",
+  DROP COLUMN IF EXISTS "pricingId";
+ALTER TABLE "RequestLog"
+  ALTER COLUMN "totalCost" TYPE DOUBLE PRECISION USING "totalCost"::double precision;
+ALTER TABLE "RequestLog" RENAME COLUMN "totalCost" TO "cost";
+DROP TYPE IF EXISTS "RequestStatus";
+DROP TYPE IF EXISTS "AttemptStatus";
+DROP TYPE IF EXISTS "FailureClass";
+DELETE FROM "_prisma_migrations"
+ WHERE migration_name = '20261102090000_requestlog_foundation';
+COMMIT;
+```
+
+This sequence was rehearsed end-to-end: after both rollbacks the catalog was byte-identical to the pre-migration catalog and the earlier build ran normally.
+
 ## Run
 
 ```bash
