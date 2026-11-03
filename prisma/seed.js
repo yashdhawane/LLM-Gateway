@@ -2,30 +2,86 @@ const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const { randomBytes } = require('node:crypto');
 
-const prisma = new PrismaClient();
+const DEFAULT_USER_EMAIL = 'dev@local.test';
 
-async function main() {
-  // MVP: one hardcoded admin account. Change this password before any real deployment.
-  const adminPassword = 'admin123';
-  const passwordHash = await bcrypt.hash(adminPassword, 10);
+// One hardcoded admin account for local development. Change the password (or
+// the account) before any real deployment.
+const DEFAULT_USER = {
+  email: DEFAULT_USER_EMAIL,
+  name: 'Dev Admin',
+  role: 'ADMIN',
+};
+const DEFAULT_PASSWORD = 'admin123';
 
+const MODELS = [
+  {
+    name: 'mock',
+    provider: 'mock',
+    upstreamName: 'mock',
+    baseUrl: null,
+    fallbackModels: [],
+    maxRetries: 0,
+    cooldownMs: 30000,
+  },
+  {
+    name: 'gpt-4o-mini',
+    provider: 'openai',
+    upstreamName: 'gpt-4o-mini',
+    baseUrl: null,
+    fallbackModels: [],
+    maxRetries: 0,
+    cooldownMs: 30000,
+  },
+  {
+    name: 'claude-3-5-haiku-latest',
+    provider: 'anthropic',
+    upstreamName: 'claude-3-5-haiku-latest',
+    baseUrl: null,
+    fallbackModels: [],
+    maxRetries: 0,
+    cooldownMs: 30000,
+  },
+];
+
+// Verified USD-per-million prices. Amounts stay strings so Prisma converts
+// them to Decimal(18, 8) without a float round-trip. Rows are append-only:
+// a price change is a new row with a later effectiveFrom, never an update.
+// Anthropic and Gemini are unverified and intentionally not seeded.
+const MODEL_PRICES = [
+  { model: 'gpt-4o-mini', input: '0.15', output: '0.60' },
+  { model: 'gpt-5-mini', input: '0.25', output: '2.00' },
+  { model: 'gpt-5-nano', input: '0.05', output: '0.40' },
+  { model: 'gpt-4.1-mini', input: '0.40', output: '1.60' },
+];
+const PRICE_EFFECTIVE_FROM = new Date('2026-01-01T00:00:00.000Z');
+
+/**
+ * Idempotent seed: creates what is missing, never rewrites what exists.
+ *
+ * - The user upsert has an empty `update`, so a re-run cannot rotate the
+ *   password hash (a fresh bcrypt salt) or demote an operator-edited role.
+ * - Model upserts are insert-only for the same reason.
+ * - Global prices are findFirst-then-create: Postgres treats NULLs as
+ *   distinct in the composite unique, so an upsert could duplicate them.
+ *
+ * Takes a Prisma client so tests can run this without a database.
+ */
+async function seed(prisma, { logger = console } = {}) {
   const user = await prisma.user.upsert({
-    where: { email: 'dev@local.test' },
-    update: {
-      role: 'ADMIN',
-      passwordHash,
-    },
+    where: { email: DEFAULT_USER.email },
+    // Create-only. An existing user keeps its passwordHash, role and name.
+    update: {},
     create: {
-      email: 'dev@local.test',
-      name: 'Dev Admin',
-      passwordHash,
-      role: 'ADMIN',
+      ...DEFAULT_USER,
+      passwordHash: await bcrypt.hash(DEFAULT_PASSWORD, 10),
     },
   });
 
   const existingKey = await prisma.apiKey.findFirst({
     where: { userId: user.id, isActive: true },
   });
+
+  let apiKeyCreated = false;
 
   if (!existingKey) {
     const rawKey = `lg_${randomBytes(24).toString('hex')}`;
@@ -39,42 +95,15 @@ async function main() {
         userId: user.id,
       },
     });
-    console.log(`Seeded API key (store it now): ${rawKey}`);
+    logger.log(`Seeded API key (store it now): ${rawKey}`);
+    apiKeyCreated = true;
   } else {
-    console.log(`API key already exists for ${user.email} (prefix ${existingKey.prefix})`);
+    logger.log(
+      `API key already exists for ${user.email} (prefix ${existingKey.prefix})`,
+    );
   }
 
-  const models = [
-    {
-      name: 'mock',
-      provider: 'mock',
-      upstreamName: 'mock',
-      baseUrl: null,
-      fallbackModels: [],
-      maxRetries: 0,
-      cooldownMs: 30000,
-    },
-    {
-      name: 'gpt-4o-mini',
-      provider: 'openai',
-      upstreamName: 'gpt-4o-mini',
-      baseUrl: null,
-      fallbackModels: [],
-      maxRetries: 0,
-      cooldownMs: 30000,
-    },
-    {
-      name: 'claude-3-5-haiku-latest',
-      provider: 'anthropic',
-      upstreamName: 'claude-3-5-haiku-latest',
-      baseUrl: null,
-      fallbackModels: [],
-      maxRetries: 0,
-      cooldownMs: 30000,
-    },
-  ];
-
-  for (const model of models) {
+  for (const model of MODELS) {
     // Insert-only: re-seeding creates missing models but never mutates
     // existing rows (customize upstreamName via migration or manual edit).
     await prisma.model.upsert({
@@ -84,20 +113,9 @@ async function main() {
     });
   }
 
-  // Verified USD-per-million prices. Amounts stay strings so Prisma converts
-  // them to Decimal(18, 8) without a float round-trip. Rows are append-only:
-  // a price change is a new row with a later effectiveFrom, never an update.
-  // Anthropic and Gemini are unverified and intentionally not seeded.
-  const modelPrices = [
-    { model: 'gpt-4o-mini', input: '0.15', output: '0.60' },
-    { model: 'gpt-5-mini', input: '0.25', output: '2.00' },
-    { model: 'gpt-5-nano', input: '0.05', output: '0.40' },
-    { model: 'gpt-4.1-mini', input: '0.40', output: '1.60' },
-  ];
-  const effectiveFrom = new Date('2026-01-01T00:00:00.000Z');
-  let seededPriceCount = 0;
+  let pricesSeeded = 0;
 
-  for (const price of modelPrices) {
+  for (const price of MODEL_PRICES) {
     // findFirst + create: Postgres treats NULLs as distinct in the composite
     // unique, so a global row could otherwise be duplicated by a re-seed.
     const existingPrice = await prisma.modelPricing.findFirst({
@@ -106,7 +124,7 @@ async function main() {
         model: price.model,
         userId: null,
         currency: 'USD',
-        effectiveFrom,
+        effectiveFrom: PRICE_EFFECTIVE_FROM,
       },
     });
 
@@ -122,23 +140,40 @@ async function main() {
         currency: 'USD',
         inputPricePerMillion: price.input,
         outputPricePerMillion: price.output,
-        effectiveFrom,
+        effectiveFrom: PRICE_EFFECTIVE_FROM,
         isActive: true,
       },
     });
 
-    seededPriceCount += 1;
+    pricesSeeded += 1;
   }
 
-  console.log(`Seeded ${seededPriceCount} model prices`);
-  console.log(`Seeded user ${user.email} and ${models.length} models`);
+  logger.log(`Seeded ${pricesSeeded} model prices`);
+  logger.log(`Seeded user ${user.email} and ${MODELS.length} models`);
+
+  return {
+    user: { id: user.id, email: user.email },
+    apiKeyCreated,
+    models: MODELS.length,
+    pricesSeeded,
+  };
 }
 
-main()
-  .catch((error) => {
+async function main() {
+  const prisma = new PrismaClient();
+
+  try {
+    await seed(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+if (require.main === module) {
+  main().catch((error) => {
     console.error(error);
     process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
   });
+}
+
+module.exports = { seed };
