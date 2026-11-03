@@ -311,6 +311,23 @@ test('redacts secrets and truncates long error messages', () => {
   // Control characters are stripped and whitespace is collapsed.
   assert.equal(sanitizeErrorMessage('a\u0000b\n\n  c'), 'ab c');
 
+  // C1 controls, line/paragraph separators and Unicode format characters are
+  // also stripped: they are invisible log-injection and terminal-spoofing
+  // vectors even though they are not C0 controls.
+  assert.equal(sanitizeErrorMessage('a\u0085b\u009Fc'), 'abc');
+  assert.equal(sanitizeErrorMessage('a\u2028b\u2029c'), 'abc');
+  assert.equal(sanitizeErrorMessage('a\u200Bb\u202Ec\uFEFFd'), 'abcd');
+
+  // Tab, newline and carriage return stay word separators after collapsing.
+  assert.equal(sanitizeErrorMessage('a\tb\r\nc'), 'a b c');
+
+  // A stripped format character can rejoin the two halves of a secret, so the
+  // post-strip redaction pass must catch the new shape.
+  assert.equal(
+    sanitizeErrorMessage('key sk-abc\u200Bdef123 end'),
+    'key [redacted] end',
+  );
+
   const long = 'x'.repeat(600);
   const truncated = sanitizeErrorMessage(long);
   // Invariant: the total, suffix included, never exceeds maxLength.

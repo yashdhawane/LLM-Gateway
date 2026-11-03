@@ -205,7 +205,15 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bBearer\s+[A-Za-z0-9._-]+/gi,
 ];
 
-const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+/**
+ * Cc (including C0/C1) and Cf (bidi overrides, zero-width characters, BOM)
+ * plus the two Unicode line separators. These are invisible log-injection and
+ * terminal-spoofing vectors, so they never reach a stored message.
+ *
+ * `Cc` contains tab/newline/CR as well; `sanitizeErrorMessage` turns those
+ * three into spaces first, so ordinary whitespace stays a word separator.
+ */
+const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 /** Kept in one place so the length budget below cannot drift from it. */
 const TRUNCATION_SUFFIX = '…[truncated]';
@@ -274,7 +282,9 @@ export function sanitizeErrorMessage(
 
   let text = redactSecrets(stringifyForLog(value));
 
-  // Strip control characters (keeping ordinary whitespace), then collapse.
+  // Keep ordinary whitespace meaningful: tab/newline/CR become a space
+  // before the Cc/Cf sweep removes every other invisible character.
+  text = text.replace(/[\t\n\r]/g, ' ');
   text = text.replace(CONTROL_CHARACTERS, '');
   text = text.replace(/\s+/g, ' ').trim();
 
