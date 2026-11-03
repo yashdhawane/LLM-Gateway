@@ -18,3 +18,6 @@ LITELLM_GAP_INVESTIGATION_REPORT.md
 # Local OpenCode workspace (agents, commands, skills, node_modules); not part
 # of the gateway build or runtime.
 .opencode/
+# Local browser-automation artifacts (console logs, snapshots) written by a
+# tooling agent while verifying a running instance.
+.playwright-mcp/
