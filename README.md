@@ -297,7 +297,7 @@ The JWT is sent as `Authorization: Bearer <token>`. The raw API key is returned 
 
 ### Chat completions
 
-`POST /chat/completions` currently supports **non-streaming text chat only**.
+`POST /chat/completions` supports blocking and streamed text chat.
 
 Supported request fields:
 
@@ -305,7 +305,8 @@ Supported request fields:
 - `messages` with `system`, `user`, `assistant`, or `developer` roles and text `content`
 - `temperature`, `top_p`
 - `n: 1`
-- `stream: false` or omitted
+- `stream: true | false`
+- `stream_options.include_usage` (only with `stream: true`)
 - `stop`
 - `max_tokens`, `max_completion_tokens`
 - `presence_penalty`, `frequency_penalty`
@@ -315,18 +316,40 @@ Supported request fields:
 
 Features that are not implemented yet are rejected explicitly with HTTP `400` and `error.code = "UNSUPPORTED_FEATURE"`:
 
-- `stream: true`
 - `n > 1`
 - tools and functions (`tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call`, tool/function messages)
 - `response_format`
 - multimodal message content arrays
 - `logprobs`, `top_logprobs`
-- `stream_options`
 - `audio`, `modalities`, `prediction`
 - `reasoning_effort`, `store`, `metadata`, `service_tier`, `verbosity`, `web_search_options`
-- unknown request or message fields
+- unknown request, message or `stream_options` fields
 
 This is deliberate: the gateway does not silently drop or pass through features it cannot guarantee across providers.
+
+#### Streaming
+
+`"stream": true` switches the same route to `text/event-stream`:
+
+```bash
+curl -N http://localhost:4000/api/v1/chat/completions \
+  -H "Authorization: Bearer lg_..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mock","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+Every event is one OpenAI-compatible `chat.completion.chunk`, and `data: [DONE]`
+terminates a successful stream. `stream_options.include_usage` adds one final
+chunk with `choices: []` and the token counts.
+
+The response is committed on the first chunk. Before it, a provider failure is
+retried or routed to a fallback and the client still receives an ordinary JSON
+error. After it, the status is already `200`, so a failure is an SSE frame with
+the usual error envelope (`STREAM_INTERRUPTED`, `PROVIDER_ERROR`, ...) and no
+`[DONE]`; it is never retried, because a second provider would restart an answer
+the user is already reading. A client disconnect aborts the upstream request and
+is recorded as `CLIENT_DISCONNECTED`. `docs/FRONTEND_CONTRACT.md` has the full
+client contract.
 
 ### Error envelope
 
@@ -335,9 +358,9 @@ Every error uses the same machine-readable shape:
 ```json
 {
   "error": {
-    "message": "Streaming is not supported yet. Set stream to false or omit it.",
+    "message": "Unsupported request field 'tools'.",
     "type": "invalid_request_error",
-    "param": "stream",
+    "param": "tools",
     "code": "UNSUPPORTED_FEATURE",
     "trace_id": "0f6f3d9d-5b6f-4b7e-9c2a-1f6f3d9d5b6f",
     "status_code": 400,
@@ -435,6 +458,6 @@ Set `OPENAI_API_KEY` in `.env` to use the seeded `gpt-4o-mini` route, or `ANTHRO
 
 ## Current status
 
-Working: validated startup config, JWT signup/login, per-user API keys, API-key guard, OpenAI-compatible non-streaming chat contract, structured error envelope, trace/request correlation, model listing, provider registry with centralized environment credentials, OpenAI and Anthropic normalization, alias/fallback routing, per-request timeout cancellation, opt-in retries, in-memory cooldowns, mock provider, request logging, user insights, admin user insights, browser CORS, published OpenAPI contract, Swagger (opt-in).
+Working: validated startup config, JWT signup/login, per-user API keys, API-key guard, OpenAI-compatible chat contract (blocking and streamed), structured error envelope, trace/request correlation, model listing, provider registry with centralized environment credentials, OpenAI and Anthropic normalization, alias/fallback routing, per-request timeout cancellation, opt-in retries, in-memory cooldowns, mock provider, request logging, user insights, admin user insights, browser CORS, published OpenAPI contract, Swagger (opt-in).
 
-MVP limitations: one seeded admin account, no refresh tokens/password reset, no role-management UI, no streaming, no shared cooldown/health state across instances, no database-backed credential store or key rotation, no rate limits/quotas, and cost tracking is not implemented. Retries are disabled by default because chat completions are not idempotent.
+MVP limitations: one seeded admin account, no refresh tokens/password reset, no role-management UI, no shared cooldown/health state across instances, no database-backed credential store or key rotation, no rate limits/quotas, and cost tracking is not implemented. Retries are disabled by default because chat completions are not idempotent.

@@ -164,12 +164,14 @@ Treat `429` and `5xx` as retryable with backoff; `4xx` otherwise is not.
 | `x-request-id` | request | Optional client-side request identifier, stored with the request log. |
 | `retry-after` | response | Seconds to wait, on `429`. Exposed through CORS. |
 | `content-type` | request | `application/json` for every write. |
+| `content-type` | response | `application/json`, or `text/event-stream; charset=utf-8` when `stream: true`. |
 
 ---
 
 ## 6. Chat completions
 
-`POST /api/v1/chat/completions` — currently **non-streaming text chat only**.
+`POST /api/v1/chat/completions` — OpenAI-compatible text chat, blocking or
+streaming.
 
 ### Accepted request
 
@@ -220,27 +222,106 @@ that the UI must not assume it. `totalCost` is not part of this response.
 
 ### Explicitly rejected (400 + `UNSUPPORTED_FEATURE`)
 
-`stream` (see below), `tools`, `tool_choice`, `parallel_tool_calls`,
-`functions`, `function_call`, `response_format`, `stream_options`, `logprobs`,
-`top_logprobs`, `modalities`, `audio`, `prediction`, `reasoning_effort`,
-`store`, `metadata`, `service_tier`, `verbosity`, `web_search_options`, `n > 1`,
-`role: "tool" | "function"`, non-string message content, and any unknown field.
+`tools`, `tool_choice`, `parallel_tool_calls`, `functions`, `function_call`,
+`response_format`, `logprobs`, `top_logprobs`, `modalities`, `audio`,
+`prediction`, `reasoning_effort`, `store`, `metadata`, `service_tier`,
+`verbosity`, `web_search_options`, `n > 1`, `role: "tool" | "function"`,
+non-string message content, and any unknown field.
 
 Unknown fields are rejected rather than ignored, so a typo in the frontend is a
-400 with the exact `param` — not a silently different request.
+400 with the exact `param` — not a silently different request. `stream_options`
+is accepted only with `stream: true` and only its `include_usage` key is known;
+anything else is the same 400.
 
 ### Streaming
 
-**Not available yet.** `"stream": true` returns:
+`POST /api/v1/chat/completions` with `"stream": true` answers
+`text/event-stream`. It is the same route, body and credential as the blocking
+call; only the transport changes.
 
 ```json
-{ "error": { "code": "UNSUPPORTED_FEATURE", "param": "stream",
-  "message": "Streaming is not supported yet. Set stream to false or omit it." } }
+{
+  "model": "mock",
+  "messages": [{ "role": "user", "content": "Hello" }],
+  "stream": true,
+  "stream_options": { "include_usage": true }
+}
 ```
 
-Build the chat screen against the blocking response for now. When streaming
-lands it will be the same route and the same body with `stream: true`, so only
-the transport changes.
+Each event is one `data:` line holding an OpenAI-compatible
+`chat.completion.chunk`, followed by a blank line:
+
+```text
+data: {"id":"chatcmpl_mock_1","object":"chat.completion.chunk","created":1761319216,"model":"mock","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"trace_id":"0f6f..."}
+
+data: {"id":"chatcmpl_mock_1",...,"choices":[{"index":0,"delta":{"content":"Mock "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_mock_1",...,"choices":[{"index":0,"delta":{"content":"response"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_mock_1",...,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl_mock_1",...,"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":9,"total_tokens":14}}
+
+data: [DONE]
+```
+
+- `data: [DONE]` is the only successful terminator. A stream that closes
+  without it did not finish.
+- `usage` is sent **only** with `stream_options.include_usage: true`, as one
+  final chunk with `choices: []`, immediately before `[DONE]`. Token counts are
+  still written to the request log either way.
+- Every chunk repeats `id`, `model` and `trace_id`. Persist `trace_id` from the
+  first chunk: it is the key to the request-log row.
+- `finish_reason` is non-null on exactly one chunk in a successful stream
+  (`stop`, `length`, or `tool_calls`; the gateway never produces tool calls
+  today, so `stop` or `length`).
+- `delta.content` may be absent (the role-only opening chunk, the closing
+  chunk). Append only what exists.
+
+#### Failures have two shapes
+
+1. **Before the first byte** — nothing was sent, so the response is an ordinary
+   HTTP error with the JSON envelope from §4 and `content-type:
+   application/json`: `400` validation/unsupported, `401` auth, `404` model,
+   `429`/`502`/`503`/`504` provider. Retries and fallback happen here, behind
+   the scenes, so the client only sees the final outcome.
+2. **After the first byte** — the status is already `200` and cannot change,
+   so the failure is an SSE error frame with the same envelope, and the
+   connection closes. There is no `[DONE]` after it:
+
+```json
+{
+  "error": {
+    "message": "The provider stream ended before the completion finished.",
+    "type": "server_error",
+    "param": null,
+    "code": "STREAM_INTERRUPTED",
+    "trace_id": "0f6f...",
+    "status_code": 502,
+    "timestamp": "2026-11-03T09:35:02.307Z"
+  }
+}
+```
+
+`STREAM_INTERRUPTED` means the provider stopped or the stream was cut.
+`PROVIDER_ERROR`, `PROVIDER_TIMEOUT` and the other provider codes from §4 can
+also appear when the provider named the failure. The gateway does **not** retry
+or fall back after the first byte: a second provider would restart an answer the
+user is already reading. `CLIENT_DISCONNECTED` never reaches a client; it only
+appears on the request-log row when the browser closed the connection.
+
+#### Client rules
+
+- Use `fetch` with `response.body.getReader()` and `TextDecoder`; `EventSource`
+  cannot POST or send an `Authorization` header.
+- Buffer partial lines: a chunk boundary can fall in the middle of a JSON
+  object. Split on `\n\n`, then parse the `data:` payload.
+- Do not auto-retry once content has rendered. Retry only a non-200 answer that
+  arrived before the stream opened (i.e. a JSON error response).
+- `[DONE]` and the error frame are mutually exclusive; treat a socket close
+  with neither as a failure.
+- Each model request is bounded by the per-model timeout as an **idle** limit:
+  no chunk for that long aborts the upstream call.
 
 ---
 
@@ -357,5 +438,7 @@ the compute awake around the clock until the monthly allowance is gone.
    the user's other applications; the gateway UI itself calls chat with a key the
    user pastes in, kept in memory only.
 4. Do not call `/chat/completions` with the JWT.
-5. Do not assume `usage` exists.
-6. Streaming is a later phase; build the blocking path first.
+5. Do not assume `usage` exists; with streaming it only arrives when
+   `stream_options.include_usage` is set.
+6. Prefer streaming for chat: build one transport module that can consume both
+   shapes, and never retry after the first chunk has rendered.
