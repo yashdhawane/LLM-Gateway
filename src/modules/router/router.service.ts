@@ -1,6 +1,15 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
+/**
+ * Upper bound for one provider attempt.
+ *
+ * The logging liveness lease is finite, so a single attempt must always be
+ * able to finish (or fail) well inside it. Five minutes keeps even slow
+ * reasoning models inside the fifteen-minute stale cutoff.
+ */
+export const MAX_PROVIDER_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface RouteTarget {
   modelId: string;
   modelName: string;
@@ -120,7 +129,10 @@ export class RouterService {
       upstreamModel: model.upstreamName?.trim() || model.name,
       provider: model.provider.trim().toLowerCase(),
       baseUrl: model.baseUrl?.trim() || undefined,
-      timeoutMs: Math.max(1, model.timeoutMs),
+      timeoutMs: Math.min(
+        MAX_PROVIDER_TIMEOUT_MS,
+        Math.max(1, model.timeoutMs),
+      ),
       maxRetries: Math.min(5, Math.max(0, model.maxRetries)),
       cooldownMs: Math.min(300_000, Math.max(0, model.cooldownMs)),
     };
